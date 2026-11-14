@@ -1,0 +1,19 @@
+# Local credentials (keep the documented template).
+.env
+.env.*
+!.env.example
+
+# Dependencies and tooling output.
+node_modules/
+coverage/
+*.tsbuildinfo
+
+# Downloaded media, temporary files, and persistent state.
+/downloads/
+/state/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.part
+*.ytdl
