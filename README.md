@@ -70,15 +70,8 @@ two commands above. It keeps pending Telegram updates on startup. Application
 errors are reported without logging tokens or message payloads. Tests use
 synthetic credentials and a loopback HTTP server; they never load `.env`.
 
-## Review checkpoints
+## Implementation plan
 
-1. Repository, pnpm, Biome, native TypeScript, and CI — complete.
-2. Private Telegram connection and authorization — current checkpoint.
-3. Format buttons and persistent SQLite queue.
-4. yt-dlp/FFmpeg downloads, progress, cancellation, and limits.
-5. Non-root Docker Compose deployment and persistent host folders.
-6. End-to-end verification.
-
-Each step is reviewed before the next begins. The planned format choices are
-MP3 at 320 kbps and MP4 capped at 720p or 1080p. Completed files stay on the
-homelab; Telegram reports status and filenames.
+See [docs/implementation-plan.md](docs/implementation-plan.md) for the agreed
+behavior, six stages, current progress, and acceptance criteria. Agent workflow
+and project conventions are in [AGENTS.md](AGENTS.md).
