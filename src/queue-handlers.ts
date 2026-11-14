@@ -47,7 +47,7 @@ export function registerQueueHandlers(
       await ctx.reply("Use /cancel <job-id> with an ID from /queue.");
       return;
     }
-    const cancelled = (worker ?? store).cancel(Number(argument));
+    const cancelled = await (worker ?? store).cancel(Number(argument));
     await ctx.reply(
       cancelled
         ? `Job #${argument} cancelled.`

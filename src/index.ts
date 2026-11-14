@@ -7,6 +7,7 @@ import { loadConfig, loadDownloadLimits, loadStorageConfig } from "./config.ts";
 import { createDownloader } from "./downloader.ts";
 import { JobNotifications } from "./notifications.ts";
 import { QueueStore } from "./queue.ts";
+import { StagingFiles } from "./staging.ts";
 import { QueueWorker } from "./worker.ts";
 
 let database: DatabaseSync | undefined;
@@ -27,6 +28,8 @@ try {
     storage.maxPending,
   );
   store.recover();
+  const staging = new StagingFiles(storage.downloadDir, store);
+  await staging.sweep();
   const limits = loadDownloadLimits(process.env);
   let bot: ReturnType<typeof createBot>;
   const notifications = new JobNotifications(store, (chat, message, text) =>
@@ -40,6 +43,7 @@ try {
       limits,
       progress: (job, text) => notifications.progress(job, text),
     }),
+    (id) => staging.remove(id),
   );
   bot = createBot(config, {}, { store, worker });
   const background = (async () => {

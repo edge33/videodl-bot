@@ -222,11 +222,11 @@ test("worker cancellation aborts active work and does not mark cancelled work co
   });
   const running = worker.drain(new AbortController().signal);
   const signal = await started.promise;
-  assert.equal(worker.cancel(queued.id), true);
-  assert.equal(worker.cancel(active.id), true);
+  assert.equal(await worker.cancel(queued.id), true);
+  assert.equal(await worker.cancel(active.id), true);
   assert.equal(signal.aborted, true);
   await running;
-  assert.equal(worker.cancel(999), false);
+  assert.equal(await worker.cancel(999), false);
   assert.equal(store.get(active.id)?.state, "cancelled");
   assert.equal(store.get(queued.id)?.state, "cancelled");
 });

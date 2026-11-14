@@ -106,6 +106,13 @@ MP3 conversion, the bot discards staged MP3 output and rebuilds it, retaining
 source audio and partial downloads. This prevents publishing audio truncated by
 an interrupted conversion.
 
+Cancelling a queued job also removes retained staging from earlier interruptions.
+Active cancellation waits for the downloader to exit before final cleanup. Startup
+sweeps staging directories for failed/cancelled jobs; queued/active work, completed
+jobs, unknown directories, and published files are preserved. If removal fails,
+the terminal state remains recorded and a safe warning is logged; cleanup retries
+on the next startup.
+
 ## Download tools and policies
 
 Install `yt-dlp`, `ffmpeg`, and `ffprobe` on `PATH` before running downloads.
