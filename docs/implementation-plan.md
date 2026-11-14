@@ -6,18 +6,19 @@ Explicit follow-up requests can refine a stage or change these decisions.
 
 ## Progress and next action
 
-| Stage                                    | Status            | Review                                                |
-| ---------------------------------------- | ----------------- | ----------------------------------------------------- |
-| 1. Repository and tooling                | Complete, merged  | [PR #1](https://github.com/edge33/videodl-bot/pull/1) |
-| 2. Private Telegram connection           | Complete, merged  | [PR #2](https://github.com/edge33/videodl-bot/pull/2) |
-| 3. Format selection and persistent queue | Next, not started | Await a request to implement this stage               |
-| 4. Downloads and file publication        | Not started       | After Stage 3 review                                  |
-| 5. Homelab deployment                    | Not started       | After Stage 4 review                                  |
-| 6. End-to-end acceptance                 | Not started       | After Stage 5 review                                  |
+| Stage                                    | Status                      | Review                                                |
+| ---------------------------------------- | --------------------------- | ----------------------------------------------------- |
+| 1. Repository and tooling                | Complete, merged            | [PR #1](https://github.com/edge33/videodl-bot/pull/1) |
+| 2. Private Telegram connection           | Complete, merged            | [PR #2](https://github.com/edge33/videodl-bot/pull/2) |
+| 3. Format selection and persistent queue | Implemented, review pending | `feat/format-selection-queue`                         |
+| 4. Downloads and file publication        | Not started                 | After Stage 3 review                                  |
+| 5. Homelab deployment                    | Not started                 | After Stage 4 review                                  |
+| 6. End-to-end acceptance                 | Not started                 | After Stage 5 review                                  |
 
-The next feature task is Stage 3 on a fresh branch from `main`. This documentation
-handoff adds no Stage 3 functionality. Update this table and the handoff notes as
-work progresses; use GitHub to verify whether a PR is open or merged.
+Stage 3 is implemented on `feat/format-selection-queue` and awaits its review
+checkpoint. Stage 4 requires a separate implementation request after review.
+Update this table and the handoff notes as work progresses; use GitHub to verify
+whether a PR is open or merged.
 
 ## Product decisions
 
@@ -120,6 +121,34 @@ Acceptance: verify valid/invalid links, owner authorization on buttons, single-u
 menus, repeated taps, duplicate requests, missing completed files, queue capacity,
 sequential execution, cancellation, and restart recovery. Tests remain independent
 of real Telegram and YouTube services. Finish at the Stage 3 review checkpoint.
+
+### Stage 3 handoff
+
+Implemented URL normalization, three inline format choices, durable single-use
+menus, SQLite jobs, pending/active deduplication, completed-file reuse, and
+`/status [job-id]`, `/queue`, and `/cancel <job-id>`. Menu consumption and job
+creation share a transaction; claims use one atomic statement with database
+indexes enforcing one active job and one pending job per video/format.
+
+`STATE_DIR` and `DOWNLOAD_DIR` now configure local storage, defaulting to resolved
+`./state` and `./downloads`. `QUEUE_MAX_PENDING` defaults to 20. A full queue leaves
+the menu available for retry. Interrupted active work returns to the queue on
+startup; terminal outcomes remain intact. A restart can temporarily leave 21
+pending jobs when the active slot is recovered; new jobs wait for capacity.
+
+The production entrypoint persists requests but deliberately has no downloader
+connected yet. `QueueWorker` is exercised with controlled fixtures, including
+sequential execution, failures, aborting active work through `/cancel`, and
+shutdown/restart recovery. Stage 4 must connect the worker to the entrypoint,
+start/wake it as work arrives, pass it to the Telegram handlers for active
+cancellation, and await it before closing SQLite. It also adds real retries,
+artifact validation/publication, progress, and notification retries.
+
+Validation: `pnpm check` and 36 automated tests pass with 100% production line,
+branch, and function coverage. Tests use temporary SQLite files and a loopback
+Telegram API stub; no real Telegram or YouTube service was contacted. Real
+Telegram manual verification of Stage 3 remains a review activity. No dependency
+or lockfile changes were needed.
 
 ## Stage 4 — Downloads and file publication
 

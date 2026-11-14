@@ -2,10 +2,10 @@
 
 A private Telegram bot for saving YouTube downloads to a homelab folder.
 
-Step 2 provides a private Telegram connection with `/start` and `/help`.
-Only the configured user can interact with the bot in a direct chat. Other users
-and group chats are ignored. Downloads and format selection will follow in Step 3
-and Step 4.
+Stage 3 adds format selection and a persistent SQLite queue. Only the configured
+user can interact with the bot in a direct chat; other users and group chats are
+ignored. Requests are saved across restarts. Actual downloads arrive in Stage 4;
+this stage leaves requests queued and exercises the worker with test fixtures.
 
 ## Development
 
@@ -50,12 +50,18 @@ The token must be present and the allowed user ID must be a positive integer.
 Telegram validates the token during the startup connection check; no local token
 format rules are applied. Configuration errors do not include credential values.
 
-| Variable                   | Planned use                                      |
-| -------------------------- | ------------------------------------------------ |
-| `TELEGRAM_BOT_API_KEY`     | Required Telegram bot token                      |
-| `TELEGRAM_ALLOWED_USER_ID` | Your numeric Telegram user ID for authorization  |
-| `DOWNLOAD_DIR`             | Absolute host download directory for Compose     |
-| `STATE_DIR`                | Absolute host SQLite state directory for Compose |
+| Variable                   | Use                                                         |
+| -------------------------- | ----------------------------------------------------------- |
+| `TELEGRAM_BOT_API_KEY`     | Required Telegram bot token                                 |
+| `TELEGRAM_ALLOWED_USER_ID` | Your numeric Telegram user ID for authorization             |
+| `DOWNLOAD_DIR`             | Absolute output path; defaults to `./downloads` resolved    |
+| `STATE_DIR`                | Absolute state path; defaults to `./state` resolved         |
+| `QUEUE_MAX_PENDING`        | Positive pending-job limit; defaults to 20, plus one active |
+
+Empty directory settings use the defaults relative to the current working
+directory. Explicit paths must be absolute. Startup creates both directories;
+state is stored in `STATE_DIR/queue.sqlite`. Keep the database and its WAL files
+together. With no downloader connected, all Stage 3 jobs count as pending.
 
 Never commit real credentials. Local environment files, `downloads/`, `state/`,
 and SQLite files are ignored by Git. CI uses no secrets or external services.
@@ -65,10 +71,37 @@ Telegram and send `/start` or `/help`. Stop it with Ctrl+C or SIGTERM. Shutdown
 cancels polling and waits for active handlers. Run only one instance per bot
 token; long polling needs outbound HTTPS access, with no public endpoint.
 
-The bot currently accepts message and callback updates, but exposes only the
-two commands above. It keeps pending Telegram updates on startup. Application
-errors are reported without logging tokens or message payloads. Tests use
-synthetic credentials and a loopback HTTP server; they never load `.env`.
+The bot keeps pending Telegram updates on startup. Application errors are
+reported without logging tokens or message payloads. Tests use synthetic
+credentials and a loopback HTTP server; they never load `.env`.
+
+## Format selection and queue
+
+Send one complete YouTube video URL per message: `youtube.com/watch?v=...`,
+`youtu.be/...`, or `youtube.com/shorts/...`. Playlist-only URLs and multiple links
+are rejected. A watch URL with playlist parameters selects only that video.
+Source availability and live/restricted-video checks belong to Stage 4.
+
+Choose **MP3 320 kbps**, **MP4 up to 720p**, or **MP4 up to 1080p**. The first
+accepted selection consumes the menu. Send the link again for another format.
+Repeated selections of the same video and format share queued/active work or
+reuse a completed file when it still exists. A removed output permits a new job.
+When the queue is full, the menu stays usable so you can retry after cancelling
+work or, from Stage 4, after work finishes.
+
+- `/start` and `/help` show readiness and available commands.
+- `/status` shows the ten most recent jobs, including terminal outcomes.
+- `/status <job-id>` shows one job and its recorded filename/outcome.
+- `/queue` lists active and queued jobs in processing order.
+- `/cancel <job-id>` cancels a queued or active job. Cancellation is final;
+  send the link again to request another job.
+
+Menus, jobs, status-message references, retry counts, and terminal results are
+persistent. Startup requeues interrupted active jobs while preserving completed,
+failed, and cancelled history. The single-worker boundary supports cancellation
+and graceful interruption; tests inject a controlled downloader. Stage 4 will
+connect the real downloader and status updates to the running bot. No downloads
+or media subprocesses run in Stage 3.
 
 ## Implementation plan
 

@@ -7,6 +7,7 @@ import {
   HttpError,
 } from "grammy";
 import { type Config, ConfigurationError } from "./config.ts";
+import { type QueueServices, registerQueueHandlers } from "./queue-handlers.ts";
 
 export function describeError(error: unknown): string {
   if (error instanceof ConfigurationError) return error.message;
@@ -26,6 +27,7 @@ export function describeError(error: unknown): string {
 export function createBot(
   config: Config,
   options: BotConfig<Context> = {},
+  queue?: QueueServices,
 ): Bot {
   const bot = new Bot(config.token, {
     ...options,
@@ -46,7 +48,7 @@ export function createBot(
   bot.command("start", async (ctx) => {
     await ctx.reply(
       "Welcome to videodl-bot. Your private Telegram connection is ready.\n" +
-        "Use /help for available commands. YouTube downloads are coming next.",
+        "Use /help for available commands.",
     );
   });
 
@@ -54,9 +56,14 @@ export function createBot(
     await ctx.reply(
       "/start — Check that the bot is ready\n" +
         "/help — Show this help\n\n" +
-        "YouTube downloads and format selection are not available yet.",
+        "/status [job-id] — Show recent jobs or one job\n" +
+        "/queue — Show queued and active jobs\n" +
+        "/cancel <job-id> — Cancel a job\n\n" +
+        "Send one YouTube video link to choose a format. Requests are saved; downloads are not enabled yet.",
     );
   });
+
+  if (queue) registerQueueHandlers(bot, queue);
 
   // Raw Telegram errors can contain request payloads or credential-bearing URLs.
   bot.catch((error) => {

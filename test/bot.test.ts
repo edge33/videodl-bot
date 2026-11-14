@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { type TestContext, test } from "node:test";
 import { GrammyError, HttpError } from "grammy";
 import type { Update } from "grammy/types";
 import { createBot, describeError, runBot } from "../src/bot.ts";
 import { ConfigurationError } from "../src/config.ts";
+import { QueueStore } from "../src/queue.ts";
+import type { QueueServices } from "../src/queue-handlers.ts";
+import { type Downloader, QueueWorker } from "../src/worker.ts";
 
 const config = {
   token: "123456:abcdefghijklmnopqrstuvwxyz_12345678",
@@ -43,7 +50,13 @@ function command(
           ? { id: userId, type: "private", first_name: "Test user" }
           : { id: -123, type: chatType, title: "Test group" },
       text,
-      entities: [{ type: "bot_command", offset: 0, length: text.length }],
+      entities: [
+        {
+          type: "bot_command",
+          offset: 0,
+          length: text.indexOf(" ") === -1 ? text.length : text.indexOf(" "),
+        },
+      ],
     },
   };
 }
@@ -51,6 +64,7 @@ function command(
 async function telegramStub(
   t: TestContext,
   handleCall: (method: string, payload: Record<string, unknown>) => unknown,
+  queue?: QueueServices,
 ) {
   const calls: { method: string; payload: Record<string, unknown> }[] = [];
   const server = createServer(async (req, res) => {
@@ -85,10 +99,14 @@ async function telegramStub(
   const address = server.address();
   assert(address && typeof address === "object");
   return {
-    bot: createBot(config, {
-      botInfo,
-      client: { apiRoot: `http://127.0.0.1:${address.port}` },
-    }),
+    bot: createBot(
+      config,
+      {
+        botInfo,
+        client: { apiRoot: `http://127.0.0.1:${address.port}` },
+      },
+      queue,
+    ),
     calls,
   };
 }
@@ -350,4 +368,230 @@ test("a completed startup connection cannot start polling after shutdown", async
   });
   await runBot(bot, shutdown.signal);
   assert.equal(bot.isRunning(), false);
+});
+
+async function queueBot(
+  t: TestContext,
+  capacity = 20,
+  downloader?: Downloader,
+) {
+  const directory = mkdtempSync(join(tmpdir(), "videodl-telegram-"));
+  const db = new DatabaseSync(join(directory, "queue.sqlite"));
+  const store = new QueueStore(db, directory, capacity);
+  const worker = downloader ? new QueueWorker(store, downloader) : undefined;
+  t.after(() => {
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const transport = await telegramStub(
+    t,
+    (method, payload) => {
+      if (method === "sendMessage") return messageReply(payload.text);
+      assert(
+        ["answerCallbackQuery", "editMessageReplyMarkup"].includes(method),
+      );
+      return { ok: true, result: true };
+    },
+    worker ? { store, worker } : { store },
+  );
+  return { ...transport, store, directory, worker };
+}
+
+let messageId = 100;
+function videoMessage(
+  text = "https://youtu.be/abcDEF_12-3",
+  userId = config.allowedUserId,
+): Update {
+  const update = command(text, userId);
+  assert(update.message);
+  update.message.message_id = ++messageId;
+  delete update.message.entities;
+  return update;
+}
+
+function selection(
+  menu: number,
+  format = "mp3",
+  userId = config.allowedUserId,
+  chatType: "private" | "group" = "private",
+): Update {
+  const message = command("/start", config.allowedUserId, chatType).message;
+  assert(message);
+  return {
+    update_id: ++messageId,
+    callback_query: {
+      id: String(messageId),
+      from: { id: userId, is_bot: false, first_name: "Test user" },
+      chat_instance: "test",
+      message,
+      data: `format:${menu}:${format}`,
+    },
+  };
+}
+
+test("owner video messages offer exactly the three agreed buttons and persist queued status", async (t) => {
+  const { bot, calls, store } = await queueBot(t);
+  await bot.handleUpdate(videoMessage());
+  const keyboard = calls.at(-1)?.payload.reply_markup as {
+    inline_keyboard: { text: string; callback_data: string }[][];
+  };
+  assert.deepEqual(
+    keyboard.inline_keyboard.map((row) => row[0]?.text),
+    ["MP3 320 kbps", "MP4 up to 720p", "MP4 up to 1080p"],
+  );
+  assert.equal(keyboard.inline_keyboard[0]?.[0]?.callback_data, "format:1:mp3");
+  await bot.handleUpdate(selection(1, "mp4_1080"));
+  assert.equal(store.list().length, 1);
+  assert.equal(store.get(1)?.format, "mp4_1080");
+  assert.equal(store.get(1)?.state, "queued");
+  assert.equal(store.get(1)?.status_chat_id, config.allowedUserId);
+  assert.equal(store.get(1)?.status_message_id, 1);
+  assert.match(String(calls.at(-1)?.payload.text), /#1.*queued/);
+  await bot.handleUpdate(selection(1, "mp3"));
+  assert.equal(store.list().length, 1);
+  assert.match(String(calls.at(-1)?.payload.text), /already used/);
+});
+
+test("queue callbacks reject other users, group chats, foreign menus, and unknown selections", async (t) => {
+  const { bot, calls, store } = await queueBot(t);
+  await bot.handleUpdate(videoMessage(undefined, 999));
+  await bot.handleUpdate(selection(1, "mp3", 999));
+  await bot.handleUpdate(selection(1, "mp3", config.allowedUserId, "group"));
+  assert.equal(calls.length, 0);
+  const foreign = store.menu("abcDEF_12-3", 999, 1);
+  await bot.handleUpdate(selection(foreign));
+  assert.match(String(calls.at(-1)?.payload.text), /unavailable/);
+  await bot.handleUpdate(selection(1, "invalid"));
+  assert.match(String(calls.at(-1)?.payload.text), /Unknown/);
+  assert.deepEqual(store.list(), []);
+});
+
+test("invalid links explain supported input without creating menus or jobs", async (t) => {
+  const { bot, calls, store } = await queueBot(t);
+  await bot.handleUpdate(
+    videoMessage("https://youtube.com/playlist?list=example"),
+  );
+  assert.match(
+    String(calls.at(-1)?.payload.text),
+    /one individual YouTube video URL/,
+  );
+  assert.deepEqual(store.list(), []);
+});
+
+test("callbacks share pending work and reuse completed files while full menus remain usable", async (t) => {
+  const { bot, calls, store, directory } = await queueBot(t, 1);
+  await bot.handleUpdate(videoMessage());
+  await bot.handleUpdate(selection(1));
+  await bot.handleUpdate(videoMessage());
+  await bot.handleUpdate(selection(2));
+  assert.equal(store.list().length, 1);
+  assert.match(String(calls.at(-3)?.payload.text), /existing job/);
+  await bot.handleUpdate(videoMessage("https://youtu.be/anotherId_1"));
+  // SQLite UPSERT may leave gaps in menu IDs; use the button's persisted ID.
+  const keyboard = calls.at(-1)?.payload.reply_markup as {
+    inline_keyboard: { callback_data: string }[][];
+  };
+  const data = keyboard.inline_keyboard[0]?.[0]?.callback_data;
+  assert(data);
+  const menu = Number(data.split(":")[1]);
+  await bot.handleUpdate(selection(menu));
+  assert.match(String(calls.at(-1)?.payload.text), /Queue full/);
+  store.claim();
+  writeFileSync(join(directory, "fixture.mp3"), "fixture");
+  store.complete(1, "fixture.mp3");
+  await bot.handleUpdate(selection(menu));
+  assert.equal(store.list().length, 2);
+  await bot.handleUpdate(videoMessage());
+  const lastKeyboard = calls.at(-1)?.payload.reply_markup as {
+    inline_keyboard: { callback_data: string }[][];
+  };
+  const lastData = lastKeyboard.inline_keyboard[0]?.[0]?.callback_data;
+  assert(lastData);
+  await bot.handleUpdate(selection(Number(lastData.split(":")[1])));
+  assert.match(
+    String(calls.at(-1)?.payload.text),
+    /completed.*fixture.mp3.*Completed/,
+  );
+  assert.equal(store.list().length, 2);
+});
+
+test("status, queue, and cancel commands expose durable job states and validate job IDs", async (t) => {
+  const { bot, calls, store } = await queueBot(t);
+  await bot.handleUpdate(command("/status"));
+  assert.equal(calls.at(-1)?.payload.text, "No matching jobs.");
+  await bot.handleUpdate(command("/queue"));
+  assert.equal(calls.at(-1)?.payload.text, "The queue is empty.");
+  await bot.handleUpdate(command("/cancel"));
+  assert.match(String(calls.at(-1)?.payload.text), /Use \/cancel/);
+  await bot.handleUpdate(videoMessage());
+  await bot.handleUpdate(selection(1));
+  await bot.handleUpdate(command("/queue"));
+  assert.match(String(calls.at(-1)?.payload.text), /#1.*queued/);
+  await bot.handleUpdate(command("/status"));
+  assert.match(String(calls.at(-1)?.payload.text), /#1.*queued/);
+  await bot.handleUpdate(command("/status 1"));
+  assert.match(String(calls.at(-1)?.payload.text), /#1.*queued/);
+  for (const argument of ["999", "invalid"]) {
+    await bot.handleUpdate(command(`/status ${argument}`));
+    assert.equal(calls.at(-1)?.payload.text, "No matching jobs.");
+  }
+  store.claim();
+  const callsBeforeUnauthorized = calls.length;
+  await bot.handleUpdate(command("/cancel 1", 999));
+  await bot.handleUpdate(command("/status", 999));
+  await bot.handleUpdate(command("/queue", config.allowedUserId, "group"));
+  assert.equal(calls.length, callsBeforeUnauthorized);
+  assert.equal(store.get(1)?.state, "active");
+  await bot.handleUpdate(command("/cancel 1"));
+  assert.equal(calls.at(-1)?.payload.text, "Job #1 cancelled.");
+  assert.equal(store.get(1)?.state, "cancelled");
+  await bot.handleUpdate(command("/status 1"));
+  assert.match(
+    String(calls.at(-1)?.payload.text),
+    /cancelled.*Cancelled by owner/,
+  );
+  await bot.handleUpdate(command("/cancel 1"));
+  assert.match(String(calls.at(-1)?.payload.text), /No queued or active/);
+});
+
+test("a failed Telegram notification leaves the queued job available through status", async (t) => {
+  const { bot, store } = await queueBot(t);
+  const menu = store.menu("abcDEF_12-3", config.allowedUserId, 1);
+  bot.api.config.use(async (previous, method, payload, signal) => {
+    if (method === "sendMessage") throw new Error("fixture transport failure");
+    return previous(method, payload, signal);
+  });
+  await assert.rejects(
+    bot.handleUpdate(selection(menu)),
+    /fixture transport failure/,
+  );
+  assert.equal(store.get(1)?.state, "queued");
+  assert.equal(store.get(1)?.status_message_id, null);
+  assert.deepEqual(store.select(menu, config.allowedUserId, "mp3"), {
+    kind: "unavailable",
+  });
+});
+
+test("cancel command aborts the active fixture downloader and leaves a durable cancelled outcome", {
+  timeout: 5000,
+}, async (t) => {
+  const started = Promise.withResolvers<void>();
+  const { bot, store, worker } = await queueBot(t, 20, async (_job, signal) => {
+    started.resolve();
+    await new Promise((_, reject) =>
+      signal.addEventListener("abort", () => reject(new Error("cancelled")), {
+        once: true,
+      }),
+    );
+    return "unreachable.mp3";
+  });
+  assert(worker);
+  await bot.handleUpdate(videoMessage());
+  await bot.handleUpdate(selection(1));
+  const running = worker.drain(new AbortController().signal);
+  await started.promise;
+  await bot.handleUpdate(command("/cancel 1"));
+  await running;
+  assert.equal(store.get(1)?.state, "cancelled");
+  assert.equal(store.get(1)?.outcome, "Cancelled by owner.");
 });
