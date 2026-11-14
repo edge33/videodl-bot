@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { test } from "node:test";
+import { type TestContext, test } from "node:test";
 import { GrammyError, HttpError } from "grammy";
 import type { Update } from "grammy/types";
 import { createBot, describeError, runBot } from "../src/bot.ts";
@@ -48,38 +48,69 @@ function command(
   };
 }
 
-test("only the owner in a private chat can reach command handlers", async (t) => {
-  const replies: Record<string, unknown>[] = [];
+async function telegramStub(
+  t: TestContext,
+  handleCall: (method: string, payload: Record<string, unknown>) => unknown,
+) {
+  const calls: { method: string; payload: Record<string, unknown> }[] = [];
   const server = createServer(async (req, res) => {
-    assert.equal(req.url, `/bot${config.token}/sendMessage`);
+    const method = req.url?.split("/").at(-1);
+    assert(method);
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
     const payload = JSON.parse(Buffer.concat(chunks).toString()) as Record<
       string,
       unknown
     >;
-    replies.push(payload);
+    calls.push({ method, payload });
     res.setHeader("content-type", "application/json");
-    res.end(
-      JSON.stringify({
-        ok: true,
-        result: {
-          message_id: 1,
-          date: 0,
-          chat: { id: config.allowedUserId, type: "private" },
-          text: payload.text,
-        },
-      }),
-    );
+    if (method === "getMe") {
+      res.end(JSON.stringify({ ok: true, result: botInfo }));
+      return;
+    }
+    if (method === "deleteWebhook") {
+      res.end(JSON.stringify({ ok: true, result: true }));
+      return;
+    }
+    const response = handleCall(method, payload);
+    // An undefined response keeps a long poll open until the client aborts it.
+    if (response !== undefined) res.end(JSON.stringify(response));
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  t.after(() => server.close());
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
   const address = server.address();
   assert(address && typeof address === "object");
-  const bot = createBot(config, {
-    botInfo,
-    client: { apiRoot: `http://127.0.0.1:${address.port}` },
+  return {
+    bot: createBot(config, {
+      botInfo,
+      client: { apiRoot: `http://127.0.0.1:${address.port}` },
+    }),
+    calls,
+  };
+}
+
+function messageReply(text: unknown) {
+  return {
+    ok: true,
+    result: {
+      message_id: 1,
+      date: 0,
+      chat: { id: config.allowedUserId, type: "private" },
+      text,
+    },
+  };
+}
+
+test("only the owner in a private chat can reach command handlers", async (t) => {
+  const replies: Record<string, unknown>[] = [];
+  const { bot } = await telegramStub(t, (method, payload) => {
+    assert.equal(method, "sendMessage");
+    replies.push(payload);
+    return messageReply(payload.text);
   });
   let callbackHandled = false;
   bot.on("callback_query", () => {
@@ -177,106 +208,103 @@ test("a shutdown requested before startup makes no Telegram calls", async () => 
   await runBot(createBot(config), shutdown.signal);
 });
 
-for (const failAcknowledgement of [false, true]) {
-  test(failAcknowledgement
-    ? "shutdown reports a failed update acknowledgement"
-    : "polling survives reply errors and shuts down with the last update acknowledged", {
-    timeout: 5000,
-  }, async (t) => {
-    const polled = Promise.withResolvers<void>();
-    const calls: string[] = [];
-    let pollCount = 0;
-    const errors: unknown[][] = [];
-    t.mock.method(console, "error", (...args: unknown[]) => errors.push(args));
-    const server = createServer(async (req, res) => {
-      const method = req.url?.split("/").at(-1);
-      assert(method);
-      calls.push(method);
-      res.setHeader("content-type", "application/json");
-      if (method === "getMe") {
-        res.end(JSON.stringify({ ok: true, result: botInfo }));
-      } else if (method === "deleteWebhook") {
-        res.end(JSON.stringify({ ok: true, result: true }));
-      } else if (method === "getUpdates") {
-        const chunks: Buffer[] = [];
-        for await (const chunk of req) chunks.push(Buffer.from(chunk));
-        const payload = JSON.parse(Buffer.concat(chunks).toString()) as Record<
-          string,
-          unknown
-        >;
-        if (payload.timeout) {
-          pollCount += 1;
-          if (pollCount === 1) {
-            res.end(
-              JSON.stringify({
-                ok: true,
-                result: [{ ...command("/start"), update_id: 42 }],
-              }),
-            );
-          } else {
-            // Keep the long poll open until the shutdown aborts its request.
-            polled.resolve();
-          }
-        } else {
-          assert.equal(payload.offset, 43);
-          res.end(
-            JSON.stringify(
-              failAcknowledgement
-                ? { ok: false, error_code: 403, description: config.token }
-                : { ok: true, result: [] },
-            ),
-          );
-        }
-      } else if (method === "sendMessage") {
-        res.end(
-          JSON.stringify({
-            ok: false,
-            error_code: 403,
-            description: config.token,
-          }),
-        );
-      } else {
-        assert.fail(`Unexpected API method: ${method}`);
-      }
-    });
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    t.after(() => {
-      server.closeAllConnections();
-      server.close();
-    });
-    const address = server.address();
-    assert(address && typeof address === "object");
-    const bot = createBot(config, {
-      client: { apiRoot: `http://127.0.0.1:${address.port}` },
-    });
-    const shutdown = new AbortController();
-    t.after(() => shutdown.abort());
-    const running = runBot(bot, shutdown.signal);
-    await polled.promise;
-    shutdown.abort();
-    if (failAcknowledgement) {
-      await assert.rejects(running, GrammyError);
-    } else {
-      await running;
+test("shutdown acknowledges the last handled update", {
+  timeout: 5000,
+}, async (t) => {
+  const polled = Promise.withResolvers<void>();
+  const { bot, calls } = await telegramStub(t, (method, payload) => {
+    assert.equal(method, "getUpdates");
+    if (!payload.timeout) return { ok: true, result: [] };
+    if (payload.offset !== 43) {
+      return {
+        ok: true,
+        result: [{ ...command("/start", 999), update_id: 42 }],
+      };
     }
-    assert.equal(bot.isRunning(), false);
-    assert.deepEqual(errors, [
-      [
-        "Could not handle Telegram update:",
-        "Telegram API request failed (code 403).",
-      ],
-    ]);
-    assert.deepEqual(calls, [
-      "getMe",
-      "deleteWebhook",
-      "getUpdates",
-      "sendMessage",
-      "getUpdates",
-      "getUpdates",
-    ]);
+    polled.resolve();
   });
-}
+  const shutdown = new AbortController();
+  t.after(() => shutdown.abort());
+  const running = runBot(bot, shutdown.signal);
+  await polled.promise;
+
+  shutdown.abort();
+  await running;
+
+  assert.equal(bot.isRunning(), false);
+  assert.deepEqual(calls.at(-1), {
+    method: "getUpdates",
+    payload: { offset: 43, limit: 1 },
+  });
+});
+
+test("a failed reply is logged safely and the next command is still handled", {
+  timeout: 5000,
+}, async (t) => {
+  const polled = Promise.withResolvers<void>();
+  const errors: unknown[][] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => errors.push(args));
+  let replies = 0;
+  const { bot } = await telegramStub(t, (method, payload) => {
+    if (method === "sendMessage") {
+      replies += 1;
+      if (replies === 1)
+        return { ok: false, error_code: 403, description: config.token };
+      return messageReply(payload.text);
+    }
+    assert.equal(method, "getUpdates");
+    if (!payload.timeout) return { ok: true, result: [] };
+    if (payload.offset !== 44) {
+      return {
+        ok: true,
+        result: [
+          { ...command("/start"), update_id: 42 },
+          { ...command("/help"), update_id: 43 },
+        ],
+      };
+    }
+    polled.resolve();
+  });
+  const shutdown = new AbortController();
+  t.after(() => shutdown.abort());
+  const running = runBot(bot, shutdown.signal);
+  await polled.promise;
+  shutdown.abort();
+  await running;
+
+  assert.equal(replies, 2);
+  assert.deepEqual(errors, [
+    [
+      "Could not handle Telegram update:",
+      "Telegram API request failed (code 403).",
+    ],
+  ]);
+});
+
+test("shutdown reports Telegram's failed acknowledgement", {
+  timeout: 5000,
+}, async (t) => {
+  const polled = Promise.withResolvers<void>();
+  const { bot } = await telegramStub(t, (method, payload) => {
+    assert.equal(method, "getUpdates");
+    if (!payload.timeout)
+      return {
+        ok: false,
+        error_code: 403,
+        description: "Acknowledgement rejected",
+      };
+    polled.resolve();
+  });
+  const shutdown = new AbortController();
+  t.after(() => shutdown.abort());
+  const running = runBot(bot, shutdown.signal);
+  await polled.promise;
+
+  shutdown.abort();
+  await assert.rejects(running, { error_code: 403 });
+
+  assert.equal(bot.isRunning(), false);
+});
 
 test("startup propagates a connection failure without starting polling", async (t) => {
   const bot = createBot(config);
