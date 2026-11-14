@@ -6,17 +6,17 @@ Explicit follow-up requests can refine a stage or change these decisions.
 
 ## Progress and next action
 
-| Stage                                    | Status                        | Review                                                |
-| ---------------------------------------- | ----------------------------- | ----------------------------------------------------- |
-| 1. Repository and tooling                | Complete, merged              | [PR #1](https://github.com/edge33/videodl-bot/pull/1) |
-| 2. Private Telegram connection           | Complete, merged              | [PR #2](https://github.com/edge33/videodl-bot/pull/2) |
-| 3. Format selection and persistent queue | Complete, merged              | [PR #4](https://github.com/edge33/videodl-bot/pull/4) |
-| 4. Downloads and file publication        | Merged; manual checks pending | [PR #5](https://github.com/edge33/videodl-bot/pull/5) |
-| 5. Homelab deployment                    | Implemented, review pending   | `feat/homelab-compose`                                |
-| 6. End-to-end acceptance                 | Not started                   | After Stage 5 review                                  |
+| Stage                                    | Status                           | Review                                                |
+| ---------------------------------------- | -------------------------------- | ----------------------------------------------------- |
+| 1. Repository and tooling                | Complete, merged                 | [PR #1](https://github.com/edge33/videodl-bot/pull/1) |
+| 2. Private Telegram connection           | Complete, merged                 | [PR #2](https://github.com/edge33/videodl-bot/pull/2) |
+| 3. Format selection and persistent queue | Complete, merged                 | [PR #4](https://github.com/edge33/videodl-bot/pull/4) |
+| 4. Downloads and file publication        | Merged; manual checks pending    | [PR #5](https://github.com/edge33/videodl-bot/pull/5) |
+| 5. Client image distribution             | Implemented; publication pending | `feat/homelab-compose`                                |
+| 6. End-to-end acceptance                 | Not started                      | After Stage 5 review                                  |
 
 Stage 4 was merged in PR #5. Stage 5 is implemented on `feat/homelab-compose`
-and awaits review. Real Telegram, YouTube playback, and the previously deferred
+and is being revised for client image distribution. Real Telegram, YouTube playback, and the previously deferred
 review findings remain acceptance work. Stage 6 requires a separate request.
 Update this table and the handoff notes as work progresses; use GitHub to verify
 whether a PR is open or merged.
@@ -38,8 +38,9 @@ whether a PR is open or merged.
 - Save files on the homelab and report status and the final filename in Telegram.
   Completed files remain indefinitely; automatic retention and Telegram file
   uploads are outside v1.
-- Run a single non-root Docker Compose service using long polling, outbound
-  HTTPS, and persistent host storage. No public inbound endpoint is required.
+- Publish a non-root container image for client-managed deployment using long
+  polling, outbound HTTPS, and persistent host storage. No Compose configuration
+  is maintained in this repository; no public inbound endpoint is required.
 
 ## Foundation and configuration
 
@@ -57,12 +58,12 @@ commands rather than introducing a compilation or third-party test-runner layer.
 
 Configuration contracts:
 
-| Variable                   | Purpose                                                              |
-| -------------------------- | -------------------------------------------------------------------- |
-| `TELEGRAM_BOT_API_KEY`     | Required existing bot token; keep this variable name                 |
-| `TELEGRAM_ALLOWED_USER_ID` | Required positive, safe-integer Telegram user ID                     |
-| `DOWNLOAD_DIR`             | Absolute host output path; bind-mounted at `/downloads` in Compose   |
-| `STATE_DIR`                | Absolute host SQLite state path; bind-mounted at `/state` in Compose |
+| Variable                   | Purpose                                                    |
+| -------------------------- | ---------------------------------------------------------- |
+| `TELEGRAM_BOT_API_KEY`     | Required existing bot token; keep this variable name       |
+| `TELEGRAM_ALLOWED_USER_ID` | Required positive, safe-integer Telegram user ID           |
+| `DOWNLOAD_DIR`             | Local output path; use `/downloads` inside the container   |
+| `STATE_DIR`                | Local SQLite state path; use `/state` inside the container |
 
 Load local environment files through Node's native support and allow existing
 environment variables to take precedence. Require token presence locally;
@@ -251,49 +252,49 @@ and real-tool YouTube challenge compatibility remain review checks. No real toke
 or YouTube request was used. Stage 5 must provision pinned media tools and EJS in
 the image; implementation is recorded below.
 
-## Stage 5 — Homelab deployment
+## Stage 5 — Client image distribution
 
-- Add a reproducible image that executes TypeScript directly on the pinned Node
-  26 release and includes pinned yt-dlp support, FFmpeg, and FFprobe.
-- Run as non-root with configurable UID/GID, the two agreed host bind mounts,
-  startup checks for configuration and writable paths, and restart behavior.
-- Document folder permissions, backups of both mounts, restart recovery, and
-  explicit dependency/image rebuilds. Keep logs free of secrets and raw payloads.
+- Provide an image that executes TypeScript on pinned Node 26 with pinned
+  yt-dlp/EJS, FFmpeg, and FFprobe; prepare registry publication for clients.
+- Create `/downloads` and `/state` in the Dockerfile and run non-root. Clients
+  provide persistent host mounts and runtime UID/GID; check writable paths on startup.
+- Document image consumption, permissions, backups, recovery, and upgrades.
+  Client deployment orchestration lives outside this repository.
 
-Acceptance: validate Compose, build/start the image, confirm usable output file
-permissions, and verify files and queued jobs survive container recreation.
-Finish at the Stage 5 review checkpoint.
+Acceptance: build/start the image, confirm file permissions, verify persistent
+files/jobs across recreation, and verify publication/pulling from the chosen
+registry. Finish at the Stage 5 review checkpoint.
 
 ### Stage 5 handoff
 
-Added `Dockerfile`, `compose.yaml`, an allowlist `.dockerignore`, and a non-root
-startup entrypoint. The image creates `/downloads` and `/state` at build time and
-owns them using configurable `APP_UID`/`APP_GID` (1000/1000 by default).
-The owner explicitly chose to keep host bind mounts: these hide image directories,
-so host paths must already exist with matching permissions. Compose disables
-host-path auto-creation; startup rejects inaccessible storage and root execution.
-README documents host provisioning, rebuilds, backup/restore, and safe operation.
+The owner changed scope after the initial Compose draft: remove Compose from this
+repository and publish an image for clients instead. Existing host bind mounts
+remain the storage choice. The Dockerfile creates and owns internal `/downloads`
+and `/state`; host mounts hide those directories and require matching ownership.
+A non-root entrypoint validates storage. Runtime `--user UID:GID` supports client
+ownership without rebuilding, with cache data written below `/tmp`.
 
-Pinned Node 26.13.1 by image digest, pnpm 12.18.0, yt-dlp 2026.10.26 with verified
-amd64/arm64 release hashes and bundled EJS, plus Debian FFmpeg/FFprobe 5.1.9 and
-CA certificates. Other OS dependencies resolve from Debian repositories at build
-time; retired pinned versions require an explicit update. Application dependency
-versions and lockfile are unchanged. Local `.env` was preserved and excluded from
-the build context. No ports are published; one service uses init, long polling,
-`unless-stopped`, and a 60-second stop grace period.
+The image pins Node 26.13.1 by digest, pnpm 12.18.0, yt-dlp 2026.10.26 with verified
+amd64/arm64 hashes and bundled EJS, FFmpeg/FFprobe 5.1.9, and CA certificates.
+Other OS packages resolve from Debian repositories at build time. The build-context
+allowlist excludes credentials, media, state, and Git. Application dependencies and
+local `.env` are unchanged. README now documents client `docker run` consumption,
+backups and upgrades. The owner chose GHCR (`ghcr.io/edge33/videodl-bot`).
+The image workflow builds PRs without publishing, publishes main/commit tags on
+main pushes, and version/latest tags on version-tag pushes; it uses the built-in
+workflow token. First publication and public-package visibility still require the
+workflow to run after merge (and owner visibility setup). No image is published yet.
 
-Validation: `pnpm check`, all 101 tests with 100% production coverage, synthetic
-`docker compose config --quiet`, and an amd64 Compose image build pass. Offline
-container checks verified non-root execution, writable Dockerfile-created paths,
-installed tool versions, and absence of `.env`/Git data. Two recreated Compose
-containers sharing temporary bind mounts preserved an interrupted SQLite job,
-output file, and UID/GID ownership; startup recovery reclaimed the job. Negative
-checks rejected root, read-only storage, missing credentials, and missing host
-bind paths. A second image built with UID/GID 1001/1001 also ran non-root with writable
-image-created storage. Temporary smoke-test containers/network and the custom-UID
-test image tag were removed.
-No real Telegram or YouTube requests were made; no temporary bot service remains
-running. Arm64 and real homelab/Telegram/video checks remain manual acceptance.
+Validation of the initial image: `pnpm check`, 101 tests with 100% production
+coverage, amd64 build, offline tool/storage checks, and recreated-container
+persistence/ownership checks passed. Custom UID/GID 1001/1001 image checks passed.
+The revised image also passed runtime UID/GID 1001/1001 storage/cache checks
+without rebuilding; `pnpm check`, all 101 tests with 100% production coverage,
+and containerized `actionlint` validation of both workflows pass after the revision.
+Negative checks rejected root, read-only storage, missing credentials, and missing
+host bind paths. Initial Compose-only validation is historical; Compose has since
+been removed. Arm64 and real client/Telegram/YouTube checks remain outstanding.
+No real bot instance was started or real Telegram/YouTube requests made.
 
 ## Stage 6 — End-to-end acceptance
 

@@ -29,7 +29,9 @@ RUN apt-get update \
     && usermod -u "$APP_UID" -g "$APP_GID" node \
     && mkdir -p /downloads /state \
     && chown "$APP_UID:$APP_GID" /downloads /state /home/node
-ENV NODE_ENV=production DOWNLOAD_DIR=/downloads STATE_DIR=/state
+LABEL org.opencontainers.image.source="https://github.com/edge33/videodl-bot" \
+      org.opencontainers.image.description="Private Telegram bot for persistent YouTube downloads"
+ENV NODE_ENV=production DOWNLOAD_DIR=/downloads STATE_DIR=/state XDG_CACHE_HOME=/tmp/videodl-cache
 WORKDIR /app
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY --from=downloader /yt-dlp /usr/local/bin/yt-dlp

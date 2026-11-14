@@ -5,7 +5,7 @@ A private Telegram bot for saving YouTube downloads to a homelab folder.
 Stage 4 connects the persistent queue to yt-dlp and FFmpeg. Only the configured
 user can interact with the bot in a direct chat; other users and group chats are
 ignored. Downloads are saved locally, with progress and final filenames reported
-in Telegram. Docker Compose deployment is available for Stage 5 review.
+in Telegram. The container image is prepared for client deployment in Stage 5.
 
 ## Development
 
@@ -171,71 +171,96 @@ them. Automated tests use controlled executable tools and the local Telegram
 stub, without real tokens or YouTube requests. Live playback checks remain part
 of the Stage 4 review checkpoint.
 
-## Docker Compose deployment
+## Container image
+
+This repository provides the Dockerfile and GHCR publication workflow; deployment
+orchestration belongs to clients. No Compose file is maintained here.
 
 The image pins Node 26.13.1 by digest, pnpm 12.18.0, yt-dlp 2026.10.26
 (with bundled EJS and architecture-specific SHA-256 checks), and Debian FFmpeg/
 FFprobe 5.1.9. It runs TypeScript directly as a non-root user. Supported image
 architectures are amd64 and arm64; only amd64 has been exercised locally.
 
-The Dockerfile creates `/downloads` and `/state` and assigns them to the image
-user at build time. Compose uses host bind mounts at those locations. Bind mounts
-hide the image directories, so existing host paths must have matching ownership;
-Dockerfile directory creation cannot create or change the host folders.
-Compose deliberately refuses to create missing host paths.
+The Dockerfile creates `/downloads` and `/state`, owned by UID/GID 1000/1000.
+Clients can supply `--user UID:GID` to match their host storage owner. Writable
+cache data goes below `/tmp`, allowing arbitrary non-root runtime IDs without
+rebuilding. Bind mounts hide the image directories: existing host paths must
+have matching ownership. The startup entrypoint rejects root execution and
+inaccessible storage; application startup validates configuration.
 
-Keep the existing `.env`. Set `DOWNLOAD_DIR` and `STATE_DIR` to absolute host
-paths, for example `/srv/videodl/downloads` and `/srv/videodl/state`. Set `APP_UID`
-and `APP_GID` to the numeric owner of those folders (defaults: 1000/1000).
-To provision host folders for your current user:
+Keep credentials in a local environment file. The following example uses the
+existing `.env`, overrides its storage variables to the internal container paths,
+and mounts two existing host folders. Set `IMAGE` to a published version or digest
+before running it. After this change merges, `ghcr.io/edge33/videodl-bot:main`
+tracks main; prefer an immutable digest for production. Use Docker's `--mount` form so missing host folders fail instead
+of being silently created with root ownership.
 
 ```sh
+IMAGE=ghcr.io/edge33/videodl-bot:main
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0750 /srv/videodl/downloads /srv/videodl/state
-id -u
-id -g
+docker pull "$IMAGE"
+docker run -d --name videodl-bot --init --restart unless-stopped --stop-timeout 60 \
+  --user "$(id -u):$(id -g)" \
+  --env-file .env --env DOWNLOAD_DIR=/downloads --env STATE_DIR=/state \
+  --mount type=bind,source=/srv/videodl/downloads,target=/downloads \
+  --mount type=bind,source=/srv/videodl/state,target=/state \
+  "$IMAGE"
+docker logs --tail=50 videodl-bot
+docker stop videodl-bot
 ```
 
-Record the printed IDs in `.env` as `APP_UID`/`APP_GID`. Those IDs are build
-arguments: rebuild the image after changing them. The image's fixed internal
-storage paths are supplied separately from the host path variables.
-The startup entrypoint rejects root execution and inaccessible storage paths;
-application startup validates configuration. Existing files retain their host
-permissions; changing IDs may require adjusting existing file ownership too.
-
-```sh
-docker compose config --quiet
-docker compose build
-docker compose up -d
-docker compose logs --tail=50 bot
-docker compose down
-```
-
-Stop any local polling instance before starting Compose. The service uses an init
-process, outbound HTTPS and DNS, no published ports, `unless-stopped` restart
-behavior, and a 60-second shutdown grace period. Completed files have the image
-user's UID/GID. No local credentials, downloads, state, or Git data enter the
-build context. Do not share unredacted `docker compose config` output, which
-contains resolved credentials; use `--quiet` for validation.
+The image needs outbound HTTPS/DNS and no published ports. Completed files use
+the runtime UID/GID. Run only one instance against a token or SQLite storage;
+stop local polling before starting a container. Each client supplies its own token,
+allowed user ID, and storage. Never put credentials into an image or build argument.
+The allowlist `.dockerignore` excludes `.env`, media, SQLite state, and Git data.
 
 Recreation preserves both bind mounts, including SQLite state and resumable
-staging. For a consistent backup, stop the service and copy both host directories,
-keeping SQLite's database and WAL files together; restart it after the copy.
-Restore both directories with their original ownership and mount paths.
+staging. For a consistent backup, stop the container and copy both host directories,
+keeping SQLite's database and WAL files together. Restore original ownership and
+mount paths. To upgrade, pull the selected new image, stop/remove the old container,
+and recreate it against the same mounts. Removing a container does not remove
+its host bind mounts.
 
-Tool versions are updated by editing the Dockerfile's pins/checksums, then
-rebuilding and recreating the service. Base-image updates require an intentional
-digest change. Debian packages come from the configured repositories, so a retired
-pinned package version requires a deliberate version update. Transitive OS
-packages are resolved at build time. To rebuild without cached layers:
+Image publication is handled by `.github/workflows/image.yml`:
+
+- Pull requests build and smoke-test amd64 without registry login or publication.
+- Main pushes publish `:main` and `:sha-<full-commit>` for amd64 and arm64.
+- Version tags such as `v0.1.0` publish `:0.1.0` and `:latest`; prerelease
+  tags publish their version without promoting `latest`.
+- Manual dispatch publishes main only. Authentication uses the workflow's
+  `GITHUB_TOKEN` with package-write permission; no additional registry secret is needed.
+
+No image is published until the workflow runs after merge or a version-tag push.
+GHCR packages initially default to private. After the first publication, the
+package owner must set visibility to public in GitHub Packages settings if clients
+should pull without authentication. Private clients need a token with
+`read:packages`. See [GitHub's registry documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+
+A release can be published from main with:
 
 ```sh
-docker compose build --pull --no-cache
-docker compose up -d --force-recreate
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
-Container smoke checks use synthetic credentials and temporary bind mounts;
-real Telegram polling, YouTube downloads, and playback remain manual acceptance
-checks. Never run two instances against the same token or SQLite storage.
+Use a new version for each release. Read the workflow run's image digest and
+verify the published architectures before handing a release to clients.
+
+For local image development:
+
+```sh
+docker build -t videodl-bot:local .
+```
+
+`APP_UID`/`APP_GID` remain optional Docker build arguments for custom images;
+clients using a published image should use `--user`. Tool upgrades require editing
+the Dockerfile's pins/checksums and rebuilding. Base-image upgrades require an
+intentional digest change. Retired Debian package pins require a deliberate
+update; transitive OS packages resolve at build time.
+
+Offline smoke checks cover storage, permissions, and queue persistence. Real
+Telegram polling, YouTube downloads, and playback remain manual acceptance.
 
 ## Implementation plan
 
