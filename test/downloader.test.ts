@@ -11,11 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { type TestContext, test } from "node:test";
-import {
-  createDownloader,
-  type DownloadOptions,
-  defaultLimits,
-} from "../src/downloader.ts";
+import { defaultLimits } from "../src/download-limits.ts";
+import { createDownloader, type DownloadOptions } from "../src/downloader.ts";
 import { DownloadError, type ProcessRunner } from "../src/process.ts";
 import { type Job, QueueStore } from "../src/queue.ts";
 

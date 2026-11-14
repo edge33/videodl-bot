@@ -1,22 +1,10 @@
 import { link, mkdir, rm, stat, statfs } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { type DownloadLimits, defaultLimits } from "./download-limits.ts";
 import { DownloadError, type ProcessRunner, runProcess } from "./process.ts";
 import type { Job, QueueStore } from "./queue.ts";
 import type { Downloader } from "./worker.ts";
-
-export interface DownloadLimits {
-  durationSeconds: number;
-  fileBytes: number;
-  reserveBytes: number;
-  deadlineMs: number;
-}
-export const defaultLimits: DownloadLimits = {
-  durationSeconds: 7200,
-  fileBytes: 4 * 1024 ** 3,
-  reserveBytes: 2 * 1024 ** 3,
-  deadlineMs: 3600000,
-};
 
 interface Metadata {
   id?: unknown;

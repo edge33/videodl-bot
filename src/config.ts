@@ -1,4 +1,5 @@
 import { isAbsolute, resolve } from "node:path";
+import { type DownloadLimits, defaultLimits } from "./download-limits.ts";
 
 export interface Config {
   token: string;
@@ -50,7 +51,7 @@ export function loadStorageConfig(env: NodeJS.ProcessEnv): {
   return { stateDir, downloadDir, maxPending: Number(pending) };
 }
 
-export function loadDownloadLimits(env: NodeJS.ProcessEnv) {
+export function loadDownloadLimits(env: NodeJS.ProcessEnv): DownloadLimits {
   const read = (name: string, fallback: number) => {
     const value = env[name]?.trim();
     if (value === undefined) return fallback;
@@ -59,9 +60,12 @@ export function loadDownloadLimits(env: NodeJS.ProcessEnv) {
     return Number(value);
   };
   return {
-    durationSeconds: read("MAX_DURATION_SECONDS", 7200),
-    fileBytes: read("MAX_FILE_BYTES", 4 * 1024 ** 3),
-    reserveBytes: read("FREE_SPACE_RESERVE_BYTES", 2 * 1024 ** 3),
-    deadlineMs: read("JOB_DEADLINE_MS", 3600000),
+    durationSeconds: read(
+      "MAX_DURATION_SECONDS",
+      defaultLimits.durationSeconds,
+    ),
+    fileBytes: read("MAX_FILE_BYTES", defaultLimits.fileBytes),
+    reserveBytes: read("FREE_SPACE_RESERVE_BYTES", defaultLimits.reserveBytes),
+    deadlineMs: read("JOB_DEADLINE_MS", defaultLimits.deadlineMs),
   };
 }

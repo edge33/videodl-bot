@@ -224,7 +224,9 @@ notification attempts are durable and independent of download retries.
 Resource defaults are configurable through `MAX_DURATION_SECONDS`, `MAX_FILE_BYTES`,
 `FREE_SPACE_RESERVE_BYTES`, and `JOB_DEADLINE_MS`. The active deadline includes
 backoff and downtime across restarts; the initial active start time and retry counts
-are durable. Disk monitoring samples once a second and cannot guarantee against
+are durable. Resource defaults and their type now share one declaration in
+`src/download-limits.ts`, used by environment loading and downloader construction.
+Disk monitoring samples once a second and cannot guarantee against
 short-lived temporary-space spikes. README documents tool setup and operations.
 
 Validation: `pnpm check` and 86 tests via `pnpm test` pass with 100% production
