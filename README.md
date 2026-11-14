@@ -173,7 +173,7 @@ of the Stage 4 review checkpoint.
 
 ## Container image
 
-This repository provides the Dockerfile and GHCR publication workflow; deployment
+This repository provides a Dockerfile and build-only PR checks; deployment
 orchestration belongs to clients. No Compose file is maintained here.
 
 The image pins Node 26.13.1 by digest, pnpm 12.18.0, yt-dlp 2026.10.26
@@ -190,15 +190,14 @@ inaccessible storage; application startup validates configuration.
 
 Keep credentials in a local environment file. The following example uses the
 existing `.env`, overrides its storage variables to the internal container paths,
-and mounts two existing host folders. Set `IMAGE` to a published version or digest
-before running it. After this change merges, `ghcr.io/edge33/videodl-bot:main`
-tracks main; prefer an immutable digest for production. Use Docker's `--mount` form so missing host folders fail instead
-of being silently created with root ownership.
+and mounts two existing host folders. Build the local image first. Use Docker's
+`--mount` form so missing host folders fail instead of being silently created
+with root ownership.
 
 ```sh
-IMAGE=ghcr.io/edge33/videodl-bot:main
+IMAGE=videodl-bot:local
+docker build -t "$IMAGE" .
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0750 /srv/videodl/downloads /srv/videodl/state
-docker pull "$IMAGE"
 docker run -d --name videodl-bot --init --restart unless-stopped --stop-timeout 60 \
   --user "$(id -u):$(id -g)" \
   --env-file .env --env DOWNLOAD_DIR=/downloads --env STATE_DIR=/state \
@@ -218,43 +217,16 @@ The allowlist `.dockerignore` excludes `.env`, media, SQLite state, and Git data
 Recreation preserves both bind mounts, including SQLite state and resumable
 staging. For a consistent backup, stop the container and copy both host directories,
 keeping SQLite's database and WAL files together. Restore original ownership and
-mount paths. To upgrade, pull the selected new image, stop/remove the old container,
+mount paths. To upgrade, build the new image, stop/remove the old container,
 and recreate it against the same mounts. Removing a container does not remove
 its host bind mounts.
 
-Image publication is handled by `.github/workflows/image.yml`:
-
-- Pull requests build and smoke-test amd64 without registry login or publication.
-- Main pushes publish `:main` and `:sha-<full-commit>` for amd64 and arm64.
-- Version tags such as `v0.1.0` publish `:0.1.0` and `:latest`; prerelease
-  tags publish their version without promoting `latest`.
-- Manual dispatch publishes main only. Authentication uses the workflow's
-  `GITHUB_TOKEN` with package-write permission; no additional registry secret is needed.
-
-No image is published until the workflow runs after merge or a version-tag push.
-GHCR packages initially default to private. After the first publication, the
-package owner must set visibility to public in GitHub Packages settings if clients
-should pull without authentication. Private clients need a token with
-`read:packages`. See [GitHub's registry documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
-
-A release can be published from main with:
-
-```sh
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-Use a new version for each release. Read the workflow run's image digest and
-verify the published architectures before handing a release to clients.
-
-For local image development:
-
-```sh
-docker build -t videodl-bot:local .
-```
+`.github/workflows/image.yml` builds and smoke-tests amd64 on pull requests only.
+It does not log in to any registry or publish images. Publication is deferred;
+GHCR is the selected registry if publishing is added later.
 
 `APP_UID`/`APP_GID` remain optional Docker build arguments for custom images;
-clients using a published image should use `--user`. Tool upgrades require editing
+clients can use `--user` without rebuilding. Tool upgrades require editing
 the Dockerfile's pins/checksums and rebuilding. Base-image upgrades require an
 intentional digest change. Retired Debian package pins require a deliberate
 update; transitive OS packages resolve at build time.

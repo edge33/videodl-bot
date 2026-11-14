@@ -6,14 +6,14 @@ Explicit follow-up requests can refine a stage or change these decisions.
 
 ## Progress and next action
 
-| Stage                                    | Status                           | Review                                                |
-| ---------------------------------------- | -------------------------------- | ----------------------------------------------------- |
-| 1. Repository and tooling                | Complete, merged                 | [PR #1](https://github.com/edge33/videodl-bot/pull/1) |
-| 2. Private Telegram connection           | Complete, merged                 | [PR #2](https://github.com/edge33/videodl-bot/pull/2) |
-| 3. Format selection and persistent queue | Complete, merged                 | [PR #4](https://github.com/edge33/videodl-bot/pull/4) |
-| 4. Downloads and file publication        | Merged; manual checks pending    | [PR #5](https://github.com/edge33/videodl-bot/pull/5) |
-| 5. Client image distribution             | Implemented; publication pending | `feat/homelab-compose`                                |
-| 6. End-to-end acceptance                 | Not started                      | After Stage 5 review                                  |
+| Stage                                    | Status                        | Review                                                |
+| ---------------------------------------- | ----------------------------- | ----------------------------------------------------- |
+| 1. Repository and tooling                | Complete, merged              | [PR #1](https://github.com/edge33/videodl-bot/pull/1) |
+| 2. Private Telegram connection           | Complete, merged              | [PR #2](https://github.com/edge33/videodl-bot/pull/2) |
+| 3. Format selection and persistent queue | Complete, merged              | [PR #4](https://github.com/edge33/videodl-bot/pull/4) |
+| 4. Downloads and file publication        | Merged; manual checks pending | [PR #5](https://github.com/edge33/videodl-bot/pull/5) |
+| 5. Client image distribution             | Implemented, review pending   | `feat/homelab-compose`                                |
+| 6. End-to-end acceptance                 | Not started                   | After Stage 5 review                                  |
 
 Stage 4 was merged in PR #5. Stage 5 is implemented on `feat/homelab-compose`
 and is being revised for client image distribution. Real Telegram, YouTube playback, and the previously deferred
@@ -38,7 +38,7 @@ whether a PR is open or merged.
 - Save files on the homelab and report status and the final filename in Telegram.
   Completed files remain indefinitely; automatic retention and Telegram file
   uploads are outside v1.
-- Publish a non-root container image for client-managed deployment using long
+- Build a non-root container image for client-managed deployment using long
   polling, outbound HTTPS, and persistent host storage. No Compose configuration
   is maintained in this repository; no public inbound endpoint is required.
 
@@ -255,20 +255,19 @@ the image; implementation is recorded below.
 ## Stage 5 — Client image distribution
 
 - Provide an image that executes TypeScript on pinned Node 26 with pinned
-  yt-dlp/EJS, FFmpeg, and FFprobe; prepare registry publication for clients.
+  yt-dlp/EJS, FFmpeg, and FFprobe. Publication is deferred.
 - Create `/downloads` and `/state` in the Dockerfile and run non-root. Clients
   provide persistent host mounts and runtime UID/GID; check writable paths on startup.
 - Document image consumption, permissions, backups, recovery, and upgrades.
   Client deployment orchestration lives outside this repository.
 
 Acceptance: build/start the image, confirm file permissions, verify persistent
-files/jobs across recreation, and verify publication/pulling from the chosen
-registry. Finish at the Stage 5 review checkpoint.
+files/jobs across recreation. Finish at the Stage 5 review checkpoint.
 
 ### Stage 5 handoff
 
 The owner changed scope after the initial Compose draft: remove Compose from this
-repository and publish an image for clients instead. Existing host bind mounts
+repository and build an image for clients instead; publication is now deferred. Existing host bind mounts
 remain the storage choice. The Dockerfile creates and owns internal `/downloads`
 and `/state`; host mounts hide those directories and require matching ownership.
 A non-root entrypoint validates storage. Runtime `--user UID:GID` supports client
@@ -279,11 +278,11 @@ amd64/arm64 hashes and bundled EJS, FFmpeg/FFprobe 5.1.9, and CA certificates.
 Other OS packages resolve from Debian repositories at build time. The build-context
 allowlist excludes credentials, media, state, and Git. Application dependencies and
 local `.env` are unchanged. README now documents client `docker run` consumption,
-backups and upgrades. The owner chose GHCR (`ghcr.io/edge33/videodl-bot`).
-The image workflow builds PRs without publishing, publishes main/commit tags on
-main pushes, and version/latest tags on version-tag pushes; it uses the built-in
-workflow token. First publication and public-package visibility still require the
-workflow to run after merge (and owner visibility setup). No image is published yet.
+backups and upgrades. GHCR (`ghcr.io/edge33/videodl-bot`) remains the selected
+registry for future publication, but the owner explicitly requested build-only
+for now. The image workflow builds and smoke-tests pull requests only, with
+explicit `push: false`, read-only permissions, no registry login, no package-write
+permission, and no main/tag publishing triggers. No image has been published.
 
 Validation of the initial image: `pnpm check`, 101 tests with 100% production
 coverage, amd64 build, offline tool/storage checks, and recreated-container
