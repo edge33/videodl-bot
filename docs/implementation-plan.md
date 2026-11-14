@@ -1,0 +1,194 @@
+# videodl-bot implementation plan
+
+This is the agreed implementation plan and handoff for future agents. Work in
+reviewable stages; completing one stage does not authorize starting the next.
+Explicit follow-up requests can refine a stage or change these decisions.
+
+## Progress and next action
+
+| Stage                                    | Status            | Review                                                |
+| ---------------------------------------- | ----------------- | ----------------------------------------------------- |
+| 1. Repository and tooling                | Complete, merged  | [PR #1](https://github.com/edge33/videodl-bot/pull/1) |
+| 2. Private Telegram connection           | Complete, merged  | [PR #2](https://github.com/edge33/videodl-bot/pull/2) |
+| 3. Format selection and persistent queue | Next, not started | Await a request to implement this stage               |
+| 4. Downloads and file publication        | Not started       | After Stage 3 review                                  |
+| 5. Homelab deployment                    | Not started       | After Stage 4 review                                  |
+| 6. End-to-end acceptance                 | Not started       | After Stage 5 review                                  |
+
+The next feature task is Stage 3 on a fresh branch from `main`. This documentation
+handoff adds no Stage 3 functionality. Update this table and the handoff notes as
+work progresses; use GitHub to verify whether a PR is open or merged.
+
+## Product decisions
+
+- The bot serves one allowlisted Telegram user in direct chats. Ignore other
+  users and group chats; authorize both messages and callback interactions.
+- Accept one individual YouTube video link per message, including Shorts and
+  unlisted videos. Normalize supported YouTube URLs to a video ID. A video URL
+  with playlist parameters downloads only that video; playlist-only URLs fail.
+- Support publicly accessible, on-demand videos. Live/scheduled streams,
+  restricted or unavailable videos, and account-cookie support are outside v1.
+- Offer three inline choices: **MP3 320 kbps**, **MP4 up to 720p**, and
+  **MP4 up to 1080p**. The video choices select the best available resolution at
+  or below the cap; a lower-resolution source is valid. Never select above 1080p.
+- The first selection consumes its menu. Sending the link again offers another
+  choice. Repeated taps must not create duplicate jobs.
+- Save files on the homelab and report status and the final filename in Telegram.
+  Completed files remain indefinitely; automatic retention and Telegram file
+  uploads are outside v1.
+- Run a single non-root Docker Compose service using long polling, outbound
+  HTTPS, and persistent host storage. No public inbound endpoint is required.
+
+## Foundation and configuration
+
+The repository is [edge33/videodl-bot](https://github.com/edge33/videodl-bot).
+Use Node 26 LTS with native TypeScript execution, pnpm, Biome, grammY, built-in
+SQLite, yt-dlp, FFmpeg, and FFprobe. Read `.nvmrc`, `package.json`, and the lockfile
+for exact runtime/tool versions; update dependencies deliberately using current
+stable releases and exact pins.
+
+Use ESM, explicit `.ts` imports, erasable syntax, and separate `tsc --noEmit`
+checking. `pnpm test` uses Node's experimental coverage with 100% line, branch,
+and function thresholds, including unloaded source files. The process entrypoint
+is excluded; application logic remains covered. See the README for setup and
+commands rather than introducing a compilation or third-party test-runner layer.
+
+Configuration contracts:
+
+| Variable                   | Purpose                                                              |
+| -------------------------- | -------------------------------------------------------------------- |
+| `TELEGRAM_BOT_API_KEY`     | Required existing bot token; keep this variable name                 |
+| `TELEGRAM_ALLOWED_USER_ID` | Required positive, safe-integer Telegram user ID                     |
+| `DOWNLOAD_DIR`             | Absolute host output path; bind-mounted at `/downloads` in Compose   |
+| `STATE_DIR`                | Absolute host SQLite state path; bind-mounted at `/state` in Compose |
+
+Load local environment files through Node's native support and allow existing
+environment variables to take precedence. Require token presence locally;
+Telegram validates it during startup. The owner specifically rejected token-format
+validation and its tests. Keep local credentials and the owner's actual ID in
+the ignored `.env`; examples and automated tests use synthetic values.
+
+## Stage 1 — Repository and tooling
+
+Completed foundation:
+
+- Initialized `main` with the GitHub remote and pinned Node/pnpm metadata.
+- Added strict TypeScript, native execution/watch scripts, Biome, exact tooling
+  dependencies, the pnpm lockfile, configuration examples, and ignore rules.
+- Used `.nvmrc` for the runtime pin, following the owner's preference.
+- Added CI on **pull requests only**, with frozen installation and project checks.
+
+Acceptance: dependency installation, formatting/linting, type checking, native
+startup, and watch startup were verified. The existing local `.env` was preserved
+and ignored. Repository initialization is historical work, not a task to repeat.
+
+## Stage 2 — Private Telegram connection
+
+Completed behavior:
+
+- Validate required configuration, enforce private-chat owner access, and expose
+  `/start` and `/help` through grammY long polling.
+- Verify the token on startup, preserve pending Telegram updates, and handle
+  SIGINT/SIGTERM by cancelling polling and waiting for active handlers.
+- Report configuration, connection, authentication, and polling-conflict errors
+  without logging credentials or message payloads.
+- Use a local HTTP Telegram stub for automated tests. Cover authorization,
+  configuration, reply-error recovery, startup cancellation races, successful
+  shutdown acknowledgement, and failed acknowledgement propagation.
+
+Acceptance: frozen installation, Biome, type checking, and 13 tests passed with
+100% production coverage at handoff. Live token verification, polling, graceful
+shutdown, and the owner's manual Telegram test succeeded. The temporary dev
+service was stopped. PR #2 is merged.
+
+## Stage 3 — Format selection and persistent queue
+
+- Validate and normalize individual video links, then present the agreed inline
+  buttons. Persist menus so the first selection can consume one atomically.
+- Add durable SQLite menus/jobs containing retry counts, job state, Telegram
+  status-message references, output filenames, and terminal outcomes. Use atomic
+  transactions for menu consumption and job claims.
+- Process one job at a time. Deduplicate by video ID and selected format; reuse
+  completed files if present, share matching pending jobs, and permit another
+  download if a recorded file has been removed.
+- Recover interrupted jobs on startup. Preserve queued work across restarts.
+- Add `/status`, `/queue`, and `/cancel <job-id>` for queued and active jobs.
+  Exercise worker behavior with a controlled downloader fixture in tests; the
+  real downloader belongs to Stage 4.
+
+Acceptance: verify valid/invalid links, owner authorization on buttons, single-use
+menus, repeated taps, duplicate requests, missing completed files, queue capacity,
+sequential execution, cancellation, and restart recovery. Tests remain independent
+of real Telegram and YouTube services. Finish at the Stage 3 review checkpoint.
+
+## Stage 4 — Downloads and file publication
+
+- Invoke yt-dlp/FFmpeg through subprocess argument arrays, with fixed format
+  policies, ambient yt-dlp configuration disabled, and playlist downloads disabled.
+  Include yt-dlp's required YouTube JavaScript runtime/challenge support.
+- Inspect metadata before downloading and enforce source/access/duration policy.
+  Prefer H.264/AAC MP4 through merging or remuxing without video re-encoding;
+  report failure when compatible output is unavailable. Encode MP3 at 320 kbps
+  without suggesting this improves source fidelity.
+- Stage each job below the download mount. Validate its final artifact and
+  atomically rename it into the flat output folder. Use sanitized, bounded title,
+  YouTube ID, and selected format in filenames. Prevent accidental overwrites.
+- Retry transient network/download failures at most twice, with 10- and 30-second
+  backoff. Report permanent failures immediately. Recover interrupted work and
+  resume partial downloads where supported.
+- Terminate downloader process groups, including FFmpeg children, on cancellation,
+  timeout, or shutdown. Retain resumable work for interrupted jobs and remove
+  temporary files after terminal failure/cancellation.
+- Reconcile a published file after a crash between rename and database update so
+  recovery does not download it again unnecessarily.
+- Edit one status message per job at most every 10 seconds: queue position,
+  download percentage when available, processing, and final result. Report the
+  filename on success. Retain job outcomes for `/status`; retry transient Telegram
+  notification failures without repeating a download.
+
+Configurable resource defaults:
+
+| Limit                                  | Default                            |
+| -------------------------------------- | ---------------------------------- |
+| Source duration                        | 2 hours                            |
+| Final file size                        | 4 GiB                              |
+| Free-space reserve                     | 2 GiB                              |
+| Active job deadline, including retries | 60 minutes                         |
+| Pending jobs                           | 20, with one additional active job |
+
+Check metadata/disk space before work, monitor free space during processing, and
+validate the final file size before publication. yt-dlp's own size option does not
+guarantee final artifact size or temporary disk usage; merging/conversion can use
+more disk than the final output.
+
+Acceptance: test all three choices, lower-resolution fallback, permanent/transient
+failures, retries, cancellation, process cleanup, restart reconciliation, and all
+resource protections, including oversized converted output. Use controlled
+subprocess fixtures for routine tests and an authorized video for manual playback
+checks. Finish at the Stage 4 review checkpoint.
+
+## Stage 5 — Homelab deployment
+
+- Add a reproducible image that executes TypeScript directly on the pinned Node
+  26 release and includes pinned yt-dlp support, FFmpeg, and FFprobe.
+- Run as non-root with configurable UID/GID, the two agreed host bind mounts,
+  startup checks for configuration and writable paths, and restart behavior.
+- Document folder permissions, backups of both mounts, restart recovery, and
+  explicit dependency/image rebuilds. Keep logs free of secrets and raw payloads.
+
+Acceptance: validate Compose, build/start the image, confirm usable output file
+permissions, and verify files and queued jobs survive container recreation.
+Finish at the Stage 5 review checkpoint.
+
+## Stage 6 — End-to-end acceptance
+
+- Run Biome, type checking, native tests/coverage, frozen installation, and
+  container checks appropriate to the final implementation.
+- Verify the real Telegram workflow, each output format, playback, progress,
+  cancellation, duplicate reuse, and restart recovery.
+- Review changes for scope, readability, credentials, and unintended generated or
+  lockfile changes. Complete configuration and operating documentation.
+
+Acceptance: report actual results, the worktree/branch and PR, plus remaining
+limitations or manual checks. Mark the plan complete only when all required
+behavior and acceptance work are finished.
