@@ -9,7 +9,7 @@ download behavior will be added in later steps.
 ## Development
 
 Use Node.js **26.13.1** and pnpm **12.18.0**. The versions are pinned in
-`.node-version` and `package.json`.
+`.nvmrc` and `package.json`. With nvm installed, run `nvm install` and `nvm use`.
 
 ```sh
 pnpm install --frozen-lockfile
