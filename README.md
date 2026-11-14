@@ -22,7 +22,7 @@ pnpm test
 | ---------------- | ----------------------------------------------------- |
 | `pnpm start`     | Run `src/index.ts` directly with Node                 |
 | `pnpm dev`       | Run with Node's native file watcher                   |
-| `pnpm test`      | Run native Node tests against a local Telegram stub   |
+| `pnpm test`      | Run native Node tests with enforced 100% coverage     |
 | `pnpm typecheck` | Check types without emitting JavaScript               |
 | `pnpm check`     | Check Biome formatting, lint, imports, and TypeScript |
 | `pnpm format`    | Apply Biome formatting                                |
@@ -32,6 +32,13 @@ extensions for relative imports, and `import type` for type-only imports.
 Use erasable syntax; enums, parameter properties, and runtime namespaces are
 unsupported. Node does not read `tsconfig.json` or check types at runtime, so
 run `pnpm check` before submitting changes. No compilation step is required.
+
+`pnpm test` uses Node's `--experimental-test-coverage` and requires 100% line,
+branch, and function coverage. Coverage includes all `src/**/*.ts` files, even
+those not imported by a test. Only `src/index.ts` is excluded: it wires process
+signals and the environment to the tested bot/configuration functions. Test
+fixtures and dependencies are outside the source inclusion pattern. PR CI runs
+the same coverage-enforcing command.
 
 ## Local configuration
 

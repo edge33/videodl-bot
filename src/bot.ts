@@ -77,7 +77,7 @@ export async function runBot(bot: Bot, signal: AbortSignal): Promise<void> {
   let stopping: Promise<void> | undefined;
   const stop = () => {
     request.abort();
-    if (!bot.isRunning() || stopping) return;
+    if (!bot.isRunning()) return;
     console.info("Stopping Telegram polling.");
     stopping = bot.stop();
     // Observe immediately; propagate failures after polling and handlers finish.
