@@ -203,6 +203,11 @@ export function createDownloader(options: DownloadOptions): Downloader {
                     "--remux-video",
                     "mp4",
                   ];
+            // A killed FFmpeg can leave a readable but incomplete MP3. yt-dlp
+            // treats that output as finished, so rebuild it while retaining
+            // source audio and .part downloads for supported resumption.
+            if (job.format === "mp3")
+              await rm(join(stage, "media.mp3"), { force: true });
             options.progress?.(job, "Downloading.");
             await execute(
               "yt-dlp",

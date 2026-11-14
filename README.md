@@ -101,7 +101,10 @@ persistent. Startup requeues interrupted active jobs while preserving completed,
 failed, and cancelled history. The single worker cancels its whole media process
 group on owner cancellation,
 shutdown, or deadline. Shutdown retains partial downloads for restart; terminal
-failures and cancellation remove staging files.
+failures and cancellation remove staging files. Before retrying or recovering an
+MP3 conversion, the bot discards staged MP3 output and rebuilds it, retaining
+source audio and partial downloads. This prevents publishing audio truncated by
+an interrupted conversion.
 
 ## Download tools and policies
 

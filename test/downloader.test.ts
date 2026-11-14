@@ -429,3 +429,71 @@ test("expired active deadline remains expired after restart", async (t) => {
     /deadline/,
   );
 });
+
+test("restart rebuilds interrupted MP3 conversion instead of publishing truncated audio", async (t) => {
+  const f = await fixture(t);
+  const stage = join(f.directory, ".staging", String(f.job.id));
+  const artifact = join(stage, "media.mp3");
+  const shutdown = new AbortController();
+  f.options.run = async (request) => {
+    if (!request.args.includes("-o")) return f.run(request);
+    await writeFile(join(stage, "media.webm"), "complete source");
+    await writeFile(join(stage, "media.webm.part"), "resumable download");
+    await writeFile(artifact, "truncated audio");
+    shutdown.abort();
+    throw shutdown.signal.reason;
+  };
+  await assert.rejects(createDownloader(f.options)(f.job, shutdown.signal));
+  f.store.recover();
+  const recovered = f.store.claim() as Job;
+  f.options.run = async (request) => {
+    if (!request.args.includes("-o")) return f.run(request);
+    // Like yt-dlp, skip conversion if the target MP3 already exists.
+    try {
+      await readFile(artifact);
+      return "already downloaded";
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    assert.equal(
+      await readFile(join(stage, "media.webm"), "utf8"),
+      "complete source",
+    );
+    assert.equal(
+      await readFile(join(stage, "media.webm.part"), "utf8"),
+      "resumable download",
+    );
+    return f.run(request);
+  };
+  const filename = await createDownloader(f.options)(
+    recovered,
+    new AbortController().signal,
+  );
+  assert.equal(await readFile(join(f.directory, filename), "utf8"), "media");
+});
+
+test("transient retry rebuilds MP3 output left by the failed attempt", async (t) => {
+  const f = await fixture(t);
+  const artifact = join(f.directory, ".staging", String(f.job.id), "media.mp3");
+  let attempts = 0;
+  f.options.run = async (request) => {
+    if (!request.args.includes("-o")) return f.run(request);
+    if (++attempts === 1) {
+      await writeFile(artifact, "truncated audio");
+      throw new DownloadError("network", true);
+    }
+    try {
+      await readFile(artifact);
+      return "already downloaded";
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    return f.run(request);
+  };
+  const filename = await createDownloader(f.options)(
+    f.job,
+    new AbortController().signal,
+  );
+  assert.equal(await readFile(join(f.directory, filename), "utf8"), "media");
+  assert.equal(f.store.get(f.job.id)?.retry_count, 1);
+});
