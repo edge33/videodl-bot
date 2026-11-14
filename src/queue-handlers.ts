@@ -12,11 +12,12 @@ function describeJob(job: Job): string {
 export interface QueueServices {
   store: QueueStore;
   worker?: QueueWorker;
+  wake?: () => void;
 }
 
 export function registerQueueHandlers(
   bot: Bot,
-  { store, worker }: QueueServices,
+  { store, worker, wake }: QueueServices,
 ): void {
   bot.command("status", async (ctx) => {
     const argument = ctx.match.trim();
@@ -77,6 +78,7 @@ export function registerQueueHandlers(
       });
       return;
     }
+    if (result.kind === "queued") wake?.();
     await ctx.answerCallbackQuery({
       text:
         result.kind === "queued"

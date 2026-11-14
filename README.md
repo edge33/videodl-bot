@@ -36,7 +36,8 @@ run `pnpm check` before submitting changes. No compilation step is required.
 `pnpm test` uses Node's `--experimental-test-coverage` and requires 100% line,
 branch, and function coverage. Coverage includes all `src/**/*.ts` files, even
 those not imported by a test. Only `src/index.ts` is excluded: it wires process
-signals and the environment to the tested bot/configuration functions. Test
+signals and the environment to tested application functions. Queue wake-ups,
+notification scheduling, and shutdown coordination live in tested `src/service.ts`. Test
 fixtures and dependencies are outside the source inclusion pattern. PR CI runs
 the same coverage-enforcing command.
 
@@ -62,6 +63,9 @@ Empty directory settings use the defaults relative to the current working
 directory. Explicit paths must be absolute. Startup creates both directories;
 state is stored in `STATE_DIR/queue.sqlite`. Keep the database and its WAL files
 together. One job runs at a time; additional jobs wait in the durable queue.
+The worker wakes once at startup and whenever a new job is saved. It drains
+available work, then becomes idle without polling SQLite for new jobs. Wake-ups
+received while draining are remembered so newly queued work cannot be stranded.
 
 Never commit real credentials. Local environment files, `downloads/`, `state/`,
 and SQLite files are ignored by Git. CI uses no secrets or external services.
@@ -158,7 +162,8 @@ usage may exceed the final size; sampling cannot prevent a sudden disk-space
 spike between checks. The initial active start time and retry count persist across restarts. Transient network/download failures get at most two
 retries, after 10 and 30 seconds; permanent failures stop immediately.
 
-Status edits are limited to one per job every 10 seconds. Delivery state and
+Status delivery runs on a separate 10-second timer; edits are limited to one per
+job every 10 seconds. Delivery state and
 attempt times survive restart; transient Telegram errors retry independently of
 downloads. Deleted/uneditable status messages stop retrying the unchanged status;
 `/status` retains the result. Progress percentages appear when yt-dlp supplies

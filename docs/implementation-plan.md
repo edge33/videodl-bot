@@ -233,9 +233,14 @@ staging for failed/cancelled jobs. Cleanup failures preserve terminal state and
 produce a safe warning. Published output and resumable queued work are preserved.
 Disk checks now share one in-flight request across timer ticks and publication,
 and the duplicate initial free-space check was removed. This closes the
-monitoring concurrency finding. Probe-validation and orchestration findings remain open.
+monitoring concurrency finding. Queue polling has been replaced by startup/new-job wake-ups. The scheduler drains
+work until idle and remembers wake-ups received while draining. Events fire after
+SQLite insertion and before Telegram I/O. Status delivery has its own 10-second
+timer. Scheduling, failure propagation, and shutdown waits are extracted into
+`src/service.ts` and tested, closing the orchestration finding. Probe validation
+remains open.
 
-Validation: `pnpm check` and 92 tests via `pnpm test` pass with 100% production
+Validation: `pnpm check` and 101 tests via `pnpm test` pass with 100% production
 line, branch, and function coverage. `git diff --check` passes. Automated
 verification uses the local Telegram API stub, controlled subprocesses, and downloader fixtures. Manual authorized-video playback, real Telegram progress,
 and real-tool YouTube challenge compatibility remain review checks. No real token
