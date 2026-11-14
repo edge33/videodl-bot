@@ -11,7 +11,7 @@ Explicit follow-up requests can refine a stage or change these decisions.
 | 1. Repository and tooling                | Complete, merged            | [PR #1](https://github.com/edge33/videodl-bot/pull/1) |
 | 2. Private Telegram connection           | Complete, merged            | [PR #2](https://github.com/edge33/videodl-bot/pull/2) |
 | 3. Format selection and persistent queue | Complete, merged            | [PR #4](https://github.com/edge33/videodl-bot/pull/4) |
-| 4. Downloads and file publication        | Implemented, review pending | `feat/downloads-publication`                          |
+| 4. Downloads and file publication        | Implemented, review pending | [PR #5](https://github.com/edge33/videodl-bot/pull/5) |
 | 5. Homelab deployment                    | Not started                 | After Stage 4 review                                  |
 | 6. End-to-end acceptance                 | Not started                 | After Stage 5 review                                  |
 
@@ -238,7 +238,11 @@ work until idle and remembers wake-ups received while draining. Events fire afte
 SQLite insertion and before Telegram I/O. Status delivery has its own 10-second
 timer. Scheduling, failure propagation, and shutdown waits are extracted into
 `src/service.ts` and tested, closing the orchestration finding. Probe validation
-remains open.
+remains open. The latest review also found that Telegram failures before status
+reference persistence can suppress automatic job notifications, and some premature
+connection closures are classified as permanent rather than retried. The owner
+explicitly deferred the notification change for now; these findings remain open
+for review. `/status` retains durable job results.
 
 Validation: `pnpm check` and 101 tests via `pnpm test` pass with 100% production
 line, branch, and function coverage. `git diff --check` passes. Automated
