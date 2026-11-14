@@ -40,9 +40,15 @@ export function createDownloader(options: DownloadOptions): Downloader {
     });
   const wait =
     options.wait ?? ((ms, signal) => delay(ms, undefined, { signal }));
-  const checkSpace = async () => {
-    if ((await freeBytes()) < limits.reserveBytes)
-      throw new DownloadError("Free-space reserve reached.");
+  let spaceCheck: Promise<void> | undefined;
+  const checkSpace = (): Promise<void> => {
+    spaceCheck ??= (async () => {
+      if ((await freeBytes()) < limits.reserveBytes)
+        throw new DownloadError("Free-space reserve reached.");
+    })().finally(() => {
+      spaceCheck = undefined;
+    });
+    return spaceCheck;
   };
 
   return async (job, shutdown) => {
@@ -56,6 +62,7 @@ export function createDownloader(options: DownloadOptions): Downloader {
     const signal = AbortSignal.any([shutdown, deadline, controller.signal]);
     // Monitoring also covers FFmpeg merging/conversion, which can exceed source size.
     const monitor = setInterval(() => {
+      if (spaceCheck) return;
       void checkSpace().catch((error: unknown) => controller.abort(error));
     }, 1000);
     const execute = (
@@ -108,7 +115,6 @@ export function createDownloader(options: DownloadOptions): Downloader {
     const perform = async () => {
       try {
         signal.throwIfAborted();
-        await checkSpace();
         // Record the intended name in SQLite before publication; it survives stage cleanup.
         const published = job.filename;
         if (published) {

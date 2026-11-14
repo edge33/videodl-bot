@@ -152,7 +152,8 @@ filesystem must support hard links; keep both the state and download directories
 | `JOB_DEADLINE_MS`          | 3600000    | Active deadline, including retries and restarts |
 
 All overrides must be positive safe integers. Disk space is checked before work,
-after processing, and every second while tools run. Temporary conversion/merge
+after processing, and every second while tools run. Checks share any in-flight
+filesystem request, so slow storage cannot accumulate overlapping checks. Temporary conversion/merge
 usage may exceed the final size; sampling cannot prevent a sudden disk-space
 spike between checks. The initial active start time and retry count persist across restarts. Transient network/download failures get at most two
 retries, after 10 and 30 seconds; permanent failures stop immediately.

@@ -354,7 +354,7 @@ test("deadline aborts a running tool and removes staging", async (t) => {
 test("free-space monitoring aborts long processing", async (t) => {
   const f = await fixture(t);
   let checks = 0;
-  f.options.freeBytes = async () => (++checks <= 2 ? 10 * 1024 ** 3 : 0);
+  f.options.freeBytes = async () => (++checks <= 1 ? 10 * 1024 ** 3 : 0);
   f.options.run = async ({ signal }) =>
     new Promise((_, reject) =>
       signal.addEventListener("abort", () => reject(signal.reason), {
@@ -493,4 +493,41 @@ test("transient retry rebuilds MP3 output left by the failed attempt", async (t)
   );
   assert.equal(await readFile(join(f.directory, filename), "utf8"), "media");
   assert.equal(f.store.get(f.job.id)?.retry_count, 1);
+});
+
+test("slow disk checks are shared with publication and never overlap timer ticks", async (t) => {
+  const f = await fixture(t);
+  const blocked = Promise.withResolvers<number>();
+  const checking = Promise.withResolvers<void>();
+  const publishing = Promise.withResolvers<void>();
+  f.options.progress = (_job, text) => {
+    if (text === "Processing and validating.") publishing.resolve();
+  };
+  const releaseDownload = Promise.withResolvers<void>();
+  let checks = 0;
+  f.options.freeBytes = async () => {
+    checks++;
+    if (checks === 1) return 10 * 1024 ** 3;
+    checking.resolve();
+    return blocked.promise;
+  };
+  f.options.run = async (request) => {
+    if (request.args.includes("-o")) await releaseDownload.promise;
+    return f.run(request);
+  };
+  const running = createDownloader(f.options)(
+    f.job,
+    new AbortController().signal,
+  );
+  await checking.promise;
+  // Another timer tick occurs while the first check is still unresolved.
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(checks, 2);
+  releaseDownload.resolve();
+  // Publication also waits for that same check rather than starting another.
+  await publishing.promise;
+  assert.equal(checks, 2);
+  blocked.resolve(10 * 1024 ** 3);
+  await running;
+  assert.equal(checks, 2);
 });

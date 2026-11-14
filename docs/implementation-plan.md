@@ -231,9 +231,11 @@ Cancellation cleanup now removes queued-job staging immediately and waits for
 active downloader exit before final cleanup. Startup retries removal of retained
 staging for failed/cancelled jobs. Cleanup failures preserve terminal state and
 produce a safe warning. Published output and resumable queued work are preserved.
-The disk-monitoring, probe-validation, and orchestration review findings remain open.
+Disk checks now share one in-flight request across timer ticks and publication,
+and the duplicate initial free-space check was removed. This closes the
+monitoring concurrency finding. Probe-validation and orchestration findings remain open.
 
-Validation: `pnpm check` and 91 tests via `pnpm test` pass with 100% production
+Validation: `pnpm check` and 92 tests via `pnpm test` pass with 100% production
 line, branch, and function coverage. `git diff --check` passes. Automated
 verification uses the local Telegram API stub, controlled subprocesses, and downloader fixtures. Manual authorized-video playback, real Telegram progress,
 and real-tool YouTube challenge compatibility remain review checks. No real token
