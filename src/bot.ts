@@ -59,7 +59,7 @@ export function createBot(
         "/status [job-id] — Show recent jobs or one job\n" +
         "/queue — Show queued and active jobs\n" +
         "/cancel <job-id> — Cancel a job\n\n" +
-        "Send one YouTube video link to choose a format. Requests are saved; downloads are not enabled yet.",
+        "Send one YouTube video link to choose a format. Downloads are saved to the configured output folder.",
     );
   });
 

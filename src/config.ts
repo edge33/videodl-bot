@@ -49,3 +49,19 @@ export function loadStorageConfig(env: NodeJS.ProcessEnv): {
   }
   return { stateDir, downloadDir, maxPending: Number(pending) };
 }
+
+export function loadDownloadLimits(env: NodeJS.ProcessEnv) {
+  const read = (name: string, fallback: number) => {
+    const value = env[name]?.trim();
+    if (value === undefined) return fallback;
+    if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value)))
+      throw new ConfigurationError(`${name} must be a positive safe integer.`);
+    return Number(value);
+  };
+  return {
+    durationSeconds: read("MAX_DURATION_SECONDS", 7200),
+    fileBytes: read("MAX_FILE_BYTES", 4 * 1024 ** 3),
+    reserveBytes: read("FREE_SPACE_RESERVE_BYTES", 2 * 1024 ** 3),
+    deadlineMs: read("JOB_DEADLINE_MS", 3600000),
+  };
+}

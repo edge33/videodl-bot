@@ -10,13 +10,14 @@ Explicit follow-up requests can refine a stage or change these decisions.
 | ---------------------------------------- | --------------------------- | ----------------------------------------------------- |
 | 1. Repository and tooling                | Complete, merged            | [PR #1](https://github.com/edge33/videodl-bot/pull/1) |
 | 2. Private Telegram connection           | Complete, merged            | [PR #2](https://github.com/edge33/videodl-bot/pull/2) |
-| 3. Format selection and persistent queue | Implemented, review pending | `feat/format-selection-queue`                         |
-| 4. Downloads and file publication        | Not started                 | After Stage 3 review                                  |
+| 3. Format selection and persistent queue | Complete, merged            | [PR #4](https://github.com/edge33/videodl-bot/pull/4) |
+| 4. Downloads and file publication        | Implemented, review pending | `feat/downloads-publication`                          |
 | 5. Homelab deployment                    | Not started                 | After Stage 4 review                                  |
 | 6. End-to-end acceptance                 | Not started                 | After Stage 5 review                                  |
 
-Stage 3 is implemented on `feat/format-selection-queue` and awaits its review
-checkpoint. Stage 4 requires a separate implementation request after review.
+Stage 3 was merged in PR #4. Stage 4 is implemented on
+`feat/downloads-publication`; live playback and Telegram verification remain at
+its review checkpoint. Stage 5 requires a separate request after review.
 Update this table and the handoff notes as work progresses; use GitHub to verify
 whether a PR is open or merged.
 
@@ -160,7 +161,8 @@ or lockfile changes were needed.
   report failure when compatible output is unavailable. Encode MP3 at 320 kbps
   without suggesting this improves source fidelity.
 - Stage each job below the download mount. Validate its final artifact and
-  atomically rename it into the flat output folder. Use sanitized, bounded title,
+  atomically publish it into the flat output folder without overwriting files.
+  Use sanitized, bounded title,
   YouTube ID, and selected format in filenames. Prevent accidental overwrites.
 - Retry transient network/download failures at most twice, with 10- and 30-second
   backoff. Report permanent failures immediately. Recover interrupted work and
@@ -195,6 +197,35 @@ failures, retries, cancellation, process cleanup, restart reconciliation, and al
 resource protections, including oversized converted output. Use controlled
 subprocess fixtures for routine tests and an authorized video for manual playback
 checks. Finish at the Stage 4 review checkpoint.
+
+### Stage 4 handoff
+
+Connected the worker to production, including startup recovery, continuous queue
+processing, active cancellation, and shutdown before SQLite closes. Added fixed
+yt-dlp argument policies, Node JavaScript runtime selection with locally installed
+EJS support, metadata/access checks, FFprobe validation, resource protections,
+two durable retries, and process-group termination. No dependency versions or
+lockfile changed. Local `.env` is preserved.
+
+Publication deliberately uses an atomic hard link followed by staging removal,
+rather than a rename that can overwrite existing files. SQLite records the intended
+filename before publication so recovery reconciles the file even if staging was
+already removed. The filesystem must support same-mount hard links. Progress,
+queue positions, processing, and terminal results edit the stored status message;
+notification attempts are durable and independent of download retries.
+
+Resource defaults are configurable through `MAX_DURATION_SECONDS`, `MAX_FILE_BYTES`,
+`FREE_SPACE_RESERVE_BYTES`, and `JOB_DEADLINE_MS`. The active deadline includes
+backoff and downtime across restarts; the initial active start time and retry counts
+are durable. Disk monitoring samples once a second and cannot guarantee against
+short-lived temporary-space spikes. README documents tool setup and operations.
+
+Validation: `pnpm check` and 84 tests via `pnpm test` pass with 100% production
+line, branch, and function coverage. `git diff --check` passes. Automated
+verification uses the local Telegram API stub, controlled subprocesses, and downloader fixtures. Manual authorized-video playback, real Telegram progress,
+and real-tool YouTube challenge compatibility remain review checks. No real token
+or YouTube request was used. Stage 5 must provision pinned media tools and EJS in
+the image; it has not started.
 
 ## Stage 5 — Homelab deployment
 

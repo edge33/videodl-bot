@@ -1,8 +1,8 @@
+import { DownloadError } from "./process.ts";
 import type { Job, QueueStore } from "./queue.ts";
 
 export type Downloader = (job: Job, signal: AbortSignal) => Promise<string>;
 
-// Stage 3 exercises this boundary with fixtures; Stage 4 supplies the real downloader.
 export class QueueWorker {
   // JavaScript # members enforce runtime privacy for worker state and the inner loop.
   readonly #store: QueueStore;
@@ -40,8 +40,12 @@ export class QueueWorker {
       try {
         const filename = await this.#download(job, controller.signal);
         if (!signal.aborted) this.#store.complete(job.id, filename);
-      } catch {
-        if (!signal.aborted) this.#store.fail(job.id);
+      } catch (error) {
+        if (!signal.aborted)
+          this.#store.fail(
+            job.id,
+            error instanceof DownloadError ? error.message : undefined,
+          );
       } finally {
         signal.removeEventListener("abort", stop);
         this.#active = undefined;

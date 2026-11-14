@@ -85,8 +85,9 @@ export function registerQueueHandlers(
     });
     await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } });
     const reply = await ctx.reply(describeJob(result.job));
-    if (result.kind === "queued")
+    if (result.kind === "queued") {
       store.statusMessage(result.job.id, ctx.from.id, reply.message_id);
+    }
   });
 
   bot.on("message:text", async (ctx) => {
@@ -103,9 +104,8 @@ export function registerQueueHandlers(
         InlineKeyboard.text(label, `format:${menuId}:${format}`),
       ]),
     );
-    await ctx.reply(
-      `Choose a format for ${videoId}. Requests are saved; downloads are not enabled yet.`,
-      { reply_markup: keyboard },
-    );
+    await ctx.reply(`Choose a format for ${videoId}.`, {
+      reply_markup: keyboard,
+    });
   });
 }

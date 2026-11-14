@@ -2,10 +2,10 @@
 
 A private Telegram bot for saving YouTube downloads to a homelab folder.
 
-Stage 3 adds format selection and a persistent SQLite queue. Only the configured
+Stage 4 connects the persistent queue to yt-dlp and FFmpeg. Only the configured
 user can interact with the bot in a direct chat; other users and group chats are
-ignored. Requests are saved across restarts. Actual downloads arrive in Stage 4;
-this stage leaves requests queued and exercises the worker with test fixtures.
+ignored. Downloads are saved locally, with progress and final filenames reported
+in Telegram. Docker deployment belongs to Stage 5.
 
 ## Development
 
@@ -61,7 +61,7 @@ format rules are applied. Configuration errors do not include credential values.
 Empty directory settings use the defaults relative to the current working
 directory. Explicit paths must be absolute. Startup creates both directories;
 state is stored in `STATE_DIR/queue.sqlite`. Keep the database and its WAL files
-together. With no downloader connected, all Stage 3 jobs count as pending.
+together. One job runs at a time; additional jobs wait in the durable queue.
 
 Never commit real credentials. Local environment files, `downloads/`, `state/`,
 and SQLite files are ignored by Git. CI uses no secrets or external services.
@@ -80,14 +80,14 @@ credentials and a loopback HTTP server; they never load `.env`.
 Send one complete YouTube video URL per message: `youtube.com/watch?v=...`,
 `youtu.be/...`, or `youtube.com/shorts/...`. Playlist-only URLs and multiple links
 are rejected. A watch URL with playlist parameters selects only that video.
-Source availability and live/restricted-video checks belong to Stage 4.
+Only public/unlisted, on-demand sources within the duration limit are accepted.
 
 Choose **MP3 320 kbps**, **MP4 up to 720p**, or **MP4 up to 1080p**. The first
 accepted selection consumes the menu. Send the link again for another format.
 Repeated selections of the same video and format share queued/active work or
 reuse a completed file when it still exists. A removed output permits a new job.
 When the queue is full, the menu stays usable so you can retry after cancelling
-work or, from Stage 4, after work finishes.
+work or after work finishes.
 
 - `/start` and `/help` show readiness and available commands.
 - `/status` shows the ten most recent jobs, including terminal outcomes.
@@ -98,10 +98,62 @@ work or, from Stage 4, after work finishes.
 
 Menus, jobs, status-message references, retry counts, and terminal results are
 persistent. Startup requeues interrupted active jobs while preserving completed,
-failed, and cancelled history. The single-worker boundary supports cancellation
-and graceful interruption; tests inject a controlled downloader. Stage 4 will
-connect the real downloader and status updates to the running bot. No downloads
-or media subprocesses run in Stage 3.
+failed, and cancelled history. The single worker cancels its whole media process
+group on owner cancellation,
+shutdown, or deadline. Shutdown retains partial downloads for restart; terminal
+failures and cancellation remove staging files.
+
+## Download tools and policies
+
+Install `yt-dlp`, `ffmpeg`, and `ffprobe` on `PATH` before running downloads.
+yt-dlp must include its matching `yt-dlp-ejs` package (included in official
+executables; Python installs can use the `default` extra). The bot explicitly
+selects the pinned Node executable as the YouTube JavaScript runtime, disables
+ambient yt-dlp configuration and remote component fetching, and never loads
+account cookies. See the [official EJS setup guide](https://github.com/yt-dlp/yt-dlp/wiki/EJS).
+Pinned image/tool provisioning is part of Stage 5; no tools are installed by the bot.
+On Arch/CachyOS, install the required tools with:
+
+```sh
+sudo pacman -S --needed yt-dlp yt-dlp-ejs ffmpeg
+```
+
+The FFmpeg package supplies `ffprobe` as well. Automated `pnpm test` runs require
+no media tools installed; they use fixtures.
+
+MP4 selects H.264 video and AAC audio at or below 720p/1080p, allowing lower
+resolutions, then merges/remuxes without video re-encoding. Incompatible sources
+fail rather than exceeding the selected cap. MP3 encodes at 320 kbps; this does
+not improve the fidelity of the source.
+
+Files stage in `DOWNLOAD_DIR/.staging/<job-id>`. FFprobe validates duration,
+container, codecs, and resolution, and the bot checks final size before publishing
+to the flat output directory. Names contain a sanitized bounded title, video ID,
+format, and job ID. Publication uses an atomic hard link on the same filesystem
+to prevent overwrites, then removes staging. The intended filename is persisted
+in SQLite first so restart can reconcile an already published file. The output
+filesystem must support hard links; keep both the state and download directories.
+
+| Variable                   | Default    | Purpose                                         |
+| -------------------------- | ---------- | ----------------------------------------------- |
+| `MAX_DURATION_SECONDS`     | 7200       | Maximum source and final duration               |
+| `MAX_FILE_BYTES`           | 4294967296 | Maximum final artifact size (4 GiB)             |
+| `FREE_SPACE_RESERVE_BYTES` | 2147483648 | Required free space (2 GiB)                     |
+| `JOB_DEADLINE_MS`          | 3600000    | Active deadline, including retries and restarts |
+
+All overrides must be positive safe integers. Disk space is checked before work,
+after processing, and every second while tools run. Temporary conversion/merge
+usage may exceed the final size; sampling cannot prevent a sudden disk-space
+spike between checks. The initial active start time and retry count persist across restarts. Transient network/download failures get at most two
+retries, after 10 and 30 seconds; permanent failures stop immediately.
+
+Status edits are limited to one per job every 10 seconds. Delivery state and
+attempt times survive restart; transient Telegram errors retry independently of
+downloads. Deleted/uneditable status messages stop retrying the unchanged status;
+`/status` retains the result. Progress percentages appear when yt-dlp supplies
+them. Automated tests use controlled executable tools and the local Telegram
+stub, without real tokens or YouTube requests. Live playback checks remain part
+of the Stage 4 review checkpoint.
 
 ## Implementation plan
 
