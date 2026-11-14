@@ -4,6 +4,7 @@ export type Downloader = (job: Job, signal: AbortSignal) => Promise<string>;
 
 // Stage 3 exercises this boundary with fixtures; Stage 4 supplies the real downloader.
 export class QueueWorker {
+  // JavaScript # members enforce runtime privacy for worker state and the inner loop.
   readonly #store: QueueStore;
   readonly #download: Downloader;
   #running: Promise<void> | undefined;
