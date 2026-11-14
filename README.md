@@ -5,7 +5,7 @@ A private Telegram bot for saving YouTube downloads to a homelab folder.
 Stage 4 connects the persistent queue to yt-dlp and FFmpeg. Only the configured
 user can interact with the bot in a direct chat; other users and group chats are
 ignored. Downloads are saved locally, with progress and final filenames reported
-in Telegram. Docker deployment belongs to Stage 5.
+in Telegram. Docker Compose deployment is available for Stage 5 review.
 
 ## Development
 
@@ -170,6 +170,72 @@ downloads. Deleted/uneditable status messages stop retrying the unchanged status
 them. Automated tests use controlled executable tools and the local Telegram
 stub, without real tokens or YouTube requests. Live playback checks remain part
 of the Stage 4 review checkpoint.
+
+## Docker Compose deployment
+
+The image pins Node 26.13.1 by digest, pnpm 12.18.0, yt-dlp 2026.10.26
+(with bundled EJS and architecture-specific SHA-256 checks), and Debian FFmpeg/
+FFprobe 5.1.9. It runs TypeScript directly as a non-root user. Supported image
+architectures are amd64 and arm64; only amd64 has been exercised locally.
+
+The Dockerfile creates `/downloads` and `/state` and assigns them to the image
+user at build time. Compose uses host bind mounts at those locations. Bind mounts
+hide the image directories, so existing host paths must have matching ownership;
+Dockerfile directory creation cannot create or change the host folders.
+Compose deliberately refuses to create missing host paths.
+
+Keep the existing `.env`. Set `DOWNLOAD_DIR` and `STATE_DIR` to absolute host
+paths, for example `/srv/videodl/downloads` and `/srv/videodl/state`. Set `APP_UID`
+and `APP_GID` to the numeric owner of those folders (defaults: 1000/1000).
+To provision host folders for your current user:
+
+```sh
+sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0750 /srv/videodl/downloads /srv/videodl/state
+id -u
+id -g
+```
+
+Record the printed IDs in `.env` as `APP_UID`/`APP_GID`. Those IDs are build
+arguments: rebuild the image after changing them. The image's fixed internal
+storage paths are supplied separately from the host path variables.
+The startup entrypoint rejects root execution and inaccessible storage paths;
+application startup validates configuration. Existing files retain their host
+permissions; changing IDs may require adjusting existing file ownership too.
+
+```sh
+docker compose config --quiet
+docker compose build
+docker compose up -d
+docker compose logs --tail=50 bot
+docker compose down
+```
+
+Stop any local polling instance before starting Compose. The service uses an init
+process, outbound HTTPS and DNS, no published ports, `unless-stopped` restart
+behavior, and a 60-second shutdown grace period. Completed files have the image
+user's UID/GID. No local credentials, downloads, state, or Git data enter the
+build context. Do not share unredacted `docker compose config` output, which
+contains resolved credentials; use `--quiet` for validation.
+
+Recreation preserves both bind mounts, including SQLite state and resumable
+staging. For a consistent backup, stop the service and copy both host directories,
+keeping SQLite's database and WAL files together; restart it after the copy.
+Restore both directories with their original ownership and mount paths.
+
+Tool versions are updated by editing the Dockerfile's pins/checksums, then
+rebuilding and recreating the service. Base-image updates require an intentional
+digest change. Debian packages come from the configured repositories, so a retired
+pinned package version requires a deliberate version update. Transitive OS
+packages are resolved at build time. To rebuild without cached layers:
+
+```sh
+docker compose build --pull --no-cache
+docker compose up -d --force-recreate
+```
+
+Container smoke checks use synthetic credentials and temporary bind mounts;
+real Telegram polling, YouTube downloads, and playback remain manual acceptance
+checks. Never run two instances against the same token or SQLite storage.
 
 ## Implementation plan
 

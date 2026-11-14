@@ -1,0 +1,9 @@
+# Explicit allowlist keeps credentials, media, state, Git, and local tools out.
+**
+!Dockerfile
+!package.json
+!pnpm-lock.yaml
+!src/
+!src/**
+!docker/
+!docker/entrypoint.sh
