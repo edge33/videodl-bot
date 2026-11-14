@@ -7,9 +7,9 @@ export class ConfigurationError extends Error {}
 
 export function loadConfig(env: NodeJS.ProcessEnv): Config {
   const token = env.TELEGRAM_BOT_API_KEY?.trim();
-  if (!token || !/^[1-9]\d*:[A-Za-z0-9_-]{20,}$/.test(token)) {
+  if (!token) {
     throw new ConfigurationError(
-      "Set TELEGRAM_BOT_API_KEY to a valid Telegram bot token.",
+      "Set TELEGRAM_BOT_API_KEY to your Telegram bot token.",
     );
   }
 

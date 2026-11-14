@@ -46,8 +46,9 @@ If you already have a `.env`, keep it. Otherwise copy `.env.example` to `.env`.
 Set `TELEGRAM_BOT_API_KEY` and `TELEGRAM_ALLOWED_USER_ID`, then run `pnpm start`
 (or `pnpm dev` while developing). Both commands load `.env` using Node's native
 environment-file support; existing environment variables take precedence.
-Missing or invalid required values fail startup with a message that does not
-include their contents.
+The token must be present and the allowed user ID must be a positive integer.
+Telegram validates the token during the startup connection check; no local token
+format rules are applied. Configuration errors do not include credential values.
 
 | Variable                   | Planned use                                      |
 | -------------------------- | ------------------------------------------------ |

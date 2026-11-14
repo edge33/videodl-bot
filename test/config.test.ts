@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ConfigurationError, loadConfig } from "../src/config.ts";
 
-const token = "123456:abcdefghijklmnopqrstuvwxyz_12345678";
+const token = "test-token";
 
 test("loads trimmed credentials and a numeric user ID", () => {
   assert.deepEqual(
@@ -14,19 +14,13 @@ test("loads trimmed credentials and a numeric user ID", () => {
   );
 });
 
-test("rejects missing or malformed tokens without exposing their value", () => {
-  for (const value of [
-    undefined,
-    "",
-    " ",
-    "secret-invalid-token",
-    "123:short",
-  ]) {
+test("requires a non-empty token", () => {
+  for (const value of [undefined, "", " "]) {
     const env: NodeJS.ProcessEnv = { TELEGRAM_ALLOWED_USER_ID: "123456789" };
     if (value !== undefined) env.TELEGRAM_BOT_API_KEY = value;
     assert.throws(() => loadConfig(env), {
       name: "Error",
-      message: "Set TELEGRAM_BOT_API_KEY to a valid Telegram bot token.",
+      message: "Set TELEGRAM_BOT_API_KEY to your Telegram bot token.",
     });
   }
 });
