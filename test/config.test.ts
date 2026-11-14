@@ -81,3 +81,27 @@ test("storage rejects relative paths and invalid queue capacities without echoin
     );
   }
 });
+
+test("download limits have agreed defaults and accept positive overrides", async () => {
+  const { loadDownloadLimits } = await import("../src/config.ts");
+  assert.deepEqual(loadDownloadLimits({}), {
+    durationSeconds: 7200,
+    fileBytes: 4294967296,
+    reserveBytes: 2147483648,
+    deadlineMs: 3600000,
+  });
+  assert.deepEqual(
+    loadDownloadLimits({
+      MAX_DURATION_SECONDS: " 1 ",
+      MAX_FILE_BYTES: "2",
+      FREE_SPACE_RESERVE_BYTES: "3",
+      JOB_DEADLINE_MS: "4",
+    }),
+    { durationSeconds: 1, fileBytes: 2, reserveBytes: 3, deadlineMs: 4 },
+  );
+  for (const value of ["", "0", "-1", "1.5", "9007199254740992"])
+    assert.throws(
+      () => loadDownloadLimits({ JOB_DEADLINE_MS: value }),
+      /positive safe integer/,
+    );
+});

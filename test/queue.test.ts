@@ -222,11 +222,11 @@ test("worker cancellation aborts active work and does not mark cancelled work co
   });
   const running = worker.drain(new AbortController().signal);
   const signal = await started.promise;
-  assert.equal(worker.cancel(queued.id), true);
-  assert.equal(worker.cancel(active.id), true);
+  assert.equal(await worker.cancel(queued.id), true);
+  assert.equal(await worker.cancel(active.id), true);
   assert.equal(signal.aborted, true);
   await running;
-  assert.equal(worker.cancel(999), false);
+  assert.equal(await worker.cancel(999), false);
   assert.equal(store.get(active.id)?.state, "cancelled");
   assert.equal(store.get(queued.id)?.state, "cancelled");
 });
@@ -284,4 +284,28 @@ test("a database closed and reopened preserves menus, terminal history, and queu
   assert.equal(reopened.get(terminal.id)?.state, "cancelled");
   assert.equal(reopened.claim()?.id, first.id);
   assert.equal(reopened.select(unusedMenu, 123, "mp4_720").kind, "queued");
+});
+
+test("worker retains safe actionable downloader failure outcomes", async (t) => {
+  const { DownloadError } = await import("../src/process.ts");
+  const { store } = fixture(t);
+  const job = enqueue(store);
+  const worker = new QueueWorker(store, async () => {
+    throw new DownloadError("Source exceeds the duration limit.");
+  });
+  await worker.drain(new AbortController().signal);
+  assert.equal(
+    store.get(job.id)?.outcome,
+    "Source exceeds the duration limit.",
+  );
+});
+
+test("active deadline start time persists across recovery", (t) => {
+  const { store } = fixture(t);
+  const job = enqueue(store);
+  store.claim();
+  assert.equal(store.startedAt(job.id, 1000), 1000);
+  store.recover();
+  store.claim();
+  assert.equal(store.startedAt(job.id, 5000), 1000);
 });

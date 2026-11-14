@@ -12,11 +12,12 @@ function describeJob(job: Job): string {
 export interface QueueServices {
   store: QueueStore;
   worker?: QueueWorker;
+  wake?: () => void;
 }
 
 export function registerQueueHandlers(
   bot: Bot,
-  { store, worker }: QueueServices,
+  { store, worker, wake }: QueueServices,
 ): void {
   bot.command("status", async (ctx) => {
     const argument = ctx.match.trim();
@@ -47,7 +48,7 @@ export function registerQueueHandlers(
       await ctx.reply("Use /cancel <job-id> with an ID from /queue.");
       return;
     }
-    const cancelled = (worker ?? store).cancel(Number(argument));
+    const cancelled = await (worker ?? store).cancel(Number(argument));
     await ctx.reply(
       cancelled
         ? `Job #${argument} cancelled.`
@@ -77,6 +78,7 @@ export function registerQueueHandlers(
       });
       return;
     }
+    if (result.kind === "queued") wake?.();
     await ctx.answerCallbackQuery({
       text:
         result.kind === "queued"
@@ -85,8 +87,9 @@ export function registerQueueHandlers(
     });
     await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } });
     const reply = await ctx.reply(describeJob(result.job));
-    if (result.kind === "queued")
+    if (result.kind === "queued") {
       store.statusMessage(result.job.id, ctx.from.id, reply.message_id);
+    }
   });
 
   bot.on("message:text", async (ctx) => {
@@ -103,9 +106,8 @@ export function registerQueueHandlers(
         InlineKeyboard.text(label, `format:${menuId}:${format}`),
       ]),
     );
-    await ctx.reply(
-      `Choose a format for ${videoId}. Requests are saved; downloads are not enabled yet.`,
-      { reply_markup: keyboard },
-    );
+    await ctx.reply(`Choose a format for ${videoId}.`, {
+      reply_markup: keyboard,
+    });
   });
 }

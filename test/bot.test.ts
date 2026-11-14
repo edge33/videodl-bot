@@ -374,6 +374,7 @@ async function queueBot(
   t: TestContext,
   capacity = 20,
   downloader?: Downloader,
+  wake?: () => void,
 ) {
   const directory = mkdtempSync(join(tmpdir(), "videodl-telegram-"));
   const db = new DatabaseSync(join(directory, "queue.sqlite"));
@@ -383,6 +384,9 @@ async function queueBot(
     db.close();
     rmSync(directory, { recursive: true, force: true });
   });
+  const services: QueueServices = { store };
+  if (worker) services.worker = worker;
+  if (wake) services.wake = wake;
   const transport = await telegramStub(
     t,
     (method, payload) => {
@@ -392,7 +396,7 @@ async function queueBot(
       );
       return { ok: true, result: true };
     },
-    worker ? { store, worker } : { store },
+    services,
   );
   return { ...transport, store, directory, worker };
 }
@@ -594,4 +598,38 @@ test("cancel command aborts the active fixture downloader and leaves a durable c
   await running;
   assert.equal(store.get(1)?.state, "cancelled");
   assert.equal(store.get(1)?.outcome, "Cancelled by owner.");
+});
+
+test("new durable jobs wake the worker before Telegram I/O; shared jobs do not wake it", async (t) => {
+  let wakes = 0;
+  const { bot, store, calls } = await queueBot(t, 20, undefined, () => {
+    wakes++;
+    assert.equal(store.list().length, 1);
+    assert.equal(calls.at(-1)?.method, "sendMessage");
+  });
+  await bot.handleUpdate(videoMessage());
+  await bot.handleUpdate(selection(1));
+  assert.equal(wakes, 1);
+  await bot.handleUpdate(videoMessage());
+  await bot.handleUpdate(selection(2));
+  assert.equal(wakes, 1);
+});
+
+test("a Telegram acknowledgement failure cannot suppress the queued-job wake", async (t) => {
+  let wakes = 0;
+  const { bot, store } = await queueBot(t, 20, undefined, () => {
+    wakes++;
+  });
+  await bot.handleUpdate(videoMessage());
+  bot.api.config.use(async (previous, method, payload, signal) => {
+    if (method === "answerCallbackQuery")
+      throw new Error("fixture acknowledgement failed");
+    return previous(method, payload, signal);
+  });
+  await assert.rejects(
+    bot.handleUpdate(selection(1)),
+    /fixture acknowledgement failed/,
+  );
+  assert.equal(wakes, 1);
+  assert.equal(store.get(1)?.state, "queued");
 });

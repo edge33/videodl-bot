@@ -56,6 +56,12 @@ export class QueueStore {
         status_chat_id INTEGER,
         status_message_id INTEGER
       );
+      CREATE TABLE IF NOT EXISTS job_deadlines (
+        job_id INTEGER PRIMARY KEY, started_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS notifications (
+        job_id INTEGER PRIMARY KEY, text TEXT NOT NULL, attempted_at INTEGER NOT NULL
+      );
       CREATE UNIQUE INDEX IF NOT EXISTS pending_video_format
         ON jobs(video_id, format) WHERE state IN ('queued','active');
       CREATE UNIQUE INDEX IF NOT EXISTS one_active_job
@@ -198,12 +204,54 @@ export class QueueStore {
       .run(filename, id);
   }
 
-  fail(id: number): void {
+  notificationJobs(): (Job & {
+    notified_text: string | null;
+    attempted_at: number | null;
+  })[] {
+    return this.#db
+      .prepare(`SELECT jobs.*, notifications.text AS notified_text, notifications.attempted_at
+      FROM jobs LEFT JOIN notifications ON jobs.id = notifications.job_id
+      WHERE status_chat_id IS NOT NULL AND status_message_id IS NOT NULL ORDER BY jobs.id`)
+      .all() as unknown as (Job & {
+      notified_text: string | null;
+      attempted_at: number | null;
+    })[];
+  }
+
+  notificationAttempt(id: number, text: string, time: number): void {
+    this.#db
+      .prepare(`INSERT INTO notifications(job_id, text, attempted_at) VALUES (?, ?, ?)
+      ON CONFLICT(job_id) DO UPDATE SET text = excluded.text, attempted_at = excluded.attempted_at`)
+      .run(id, text, time);
+  }
+
+  preparePublication(id: number, filename: string): void {
+    this.#db
+      .prepare("UPDATE jobs SET filename = ? WHERE id = ? AND state = 'active'")
+      .run(filename, id);
+  }
+
+  startedAt(id: number, now: number): number {
+    return (
+      this.#db
+        .prepare(`INSERT INTO job_deadlines(job_id, started_at) VALUES (?, ?)
+      ON CONFLICT(job_id) DO UPDATE SET job_id = excluded.job_id RETURNING started_at`)
+        .get(id, now) as { started_at: number }
+    ).started_at;
+  }
+
+  retry(id: number): void {
+    this.#db
+      .prepare("UPDATE jobs SET retry_count = retry_count + 1 WHERE id = ?")
+      .run(id);
+  }
+
+  fail(id: number, outcome = "Download failed."): void {
     this.#db
       .prepare(
-        "UPDATE jobs SET state = 'failed', outcome = 'Download failed.' WHERE id = ? AND state = 'active'",
+        "UPDATE jobs SET state = 'failed', outcome = ? WHERE id = ? AND state = 'active'",
       )
-      .run(id);
+      .run(outcome, id);
   }
 
   recover(): void {

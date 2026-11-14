@@ -2,8 +2,13 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createBot, describeError, runBot } from "./bot.ts";
-import { loadConfig, loadStorageConfig } from "./config.ts";
+import { loadConfig, loadDownloadLimits, loadStorageConfig } from "./config.ts";
+import { createDownloader } from "./downloader.ts";
+import { JobNotifications } from "./notifications.ts";
 import { QueueStore } from "./queue.ts";
+import { runService } from "./service.ts";
+import { StagingFiles } from "./staging.ts";
+import { QueueWorker } from "./worker.ts";
 
 let database: DatabaseSync | undefined;
 const shutdown = new AbortController();
@@ -23,8 +28,32 @@ try {
     storage.maxPending,
   );
   store.recover();
-  const bot = createBot(config, {}, { store });
-  await runBot(bot, shutdown.signal);
+  const staging = new StagingFiles(storage.downloadDir, store);
+  await staging.sweep();
+  const limits = loadDownloadLimits(process.env);
+  let bot: ReturnType<typeof createBot>;
+  const notifications = new JobNotifications(store, (chat, message, text) =>
+    bot.api.editMessageText(chat, message, text),
+  );
+  const worker = new QueueWorker(
+    store,
+    createDownloader({
+      directory: storage.downloadDir,
+      store,
+      limits,
+      progress: (job, text) => notifications.progress(job, text),
+    }),
+    (id) => staging.remove(id),
+  );
+  await runService({
+    worker,
+    notifications,
+    shutdown,
+    poll: (signal, wake) => {
+      bot = createBot(config, {}, { store, worker, wake });
+      return runBot(bot, signal);
+    },
+  });
 } catch (error) {
   console.error(describeError(error));
   process.exitCode = 1;

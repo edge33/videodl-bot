@@ -1,4 +1,5 @@
 import { isAbsolute, resolve } from "node:path";
+import { type DownloadLimits, defaultLimits } from "./download-limits.ts";
 
 export interface Config {
   token: string;
@@ -48,4 +49,23 @@ export function loadStorageConfig(env: NodeJS.ProcessEnv): {
     );
   }
   return { stateDir, downloadDir, maxPending: Number(pending) };
+}
+
+export function loadDownloadLimits(env: NodeJS.ProcessEnv): DownloadLimits {
+  const read = (name: string, fallback: number) => {
+    const value = env[name]?.trim();
+    if (value === undefined) return fallback;
+    if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value)))
+      throw new ConfigurationError(`${name} must be a positive safe integer.`);
+    return Number(value);
+  };
+  return {
+    durationSeconds: read(
+      "MAX_DURATION_SECONDS",
+      defaultLimits.durationSeconds,
+    ),
+    fileBytes: read("MAX_FILE_BYTES", defaultLimits.fileBytes),
+    reserveBytes: read("FREE_SPACE_RESERVE_BYTES", defaultLimits.reserveBytes),
+    deadlineMs: read("JOB_DEADLINE_MS", defaultLimits.deadlineMs),
+  };
 }
