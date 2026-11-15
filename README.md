@@ -24,6 +24,7 @@ pnpm test
 | `pnpm dev`       | Run with Node's native file watcher                   |
 | `pnpm test`      | Run native Node tests with enforced 100% coverage     |
 | `pnpm typecheck` | Check types without emitting JavaScript               |
+| `pnpm lint`      | Check Biome formatting, lint, and imports             |
 | `pnpm check`     | Check Biome formatting, lint, imports, and TypeScript |
 | `pnpm format`    | Apply Biome formatting                                |
 
@@ -221,9 +222,10 @@ mount paths. To upgrade, build the new image, stop/remove the old container,
 and recreate it against the same mounts. Removing a container does not remove
 its host bind mounts.
 
-`.github/workflows/image.yml` builds and smoke-tests amd64 on pull requests only.
-It does not log in to any registry or publish images. Publication is deferred;
-GHCR is the selected registry if publishing is added later.
+`.github/workflows/ci.yml` runs on pull requests only, with four validation steps:
+TypeScript (`tsc --noEmit`), lint/format/import checks, tests with coverage, and
+Docker image build. There is no separate image workflow or runtime smoke step in
+CI. No registry login or publishing runs. GHCR remains the choice for future publication.
 
 `APP_UID`/`APP_GID` remain optional Docker build arguments for custom images;
 clients can use `--user` without rebuilding. Tool upgrades require editing

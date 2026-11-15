@@ -14,7 +14,8 @@
     "dev": "node --env-file-if-exists=.env --watch src/index.ts",
     "test": "node --test --experimental-test-coverage --test-coverage-include=\"src/**/*.ts\" --test-coverage-exclude=src/index.ts --test-coverage-include-all --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100",
     "typecheck": "tsc --noEmit",
-    "check": "biome check . && pnpm typecheck",
+    "lint": "biome check .",
+    "check": "pnpm lint && pnpm typecheck",
     "format": "biome format --write ."
   },
   "devDependencies": {

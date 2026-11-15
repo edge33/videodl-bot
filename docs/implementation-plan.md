@@ -280,9 +280,11 @@ allowlist excludes credentials, media, state, and Git. Application dependencies 
 local `.env` are unchanged. README now documents client `docker run` consumption,
 backups and upgrades. GHCR (`ghcr.io/edge33/videodl-bot`) remains the selected
 registry for future publication, but the owner explicitly requested build-only
-for now. The image workflow builds and smoke-tests pull requests only, with
-explicit `push: false`, read-only permissions, no registry login, no package-write
-permission, and no main/tag publishing triggers. No image has been published.
+for now. PR validation is consolidated in `.github/workflows/ci.yml`: TypeScript,
+lint (Biome formatting/imports included), tests, and Docker build. The separate
+image workflow and CI runtime smoke step were removed at the owner's request.
+Permissions remain read-only, with no registry login, package-write permission,
+or main/tag publishing triggers. No image has been published.
 
 Validation of the initial image: `pnpm check`, 101 tests with 100% production
 coverage, amd64 build, offline tool/storage checks, and recreated-container
