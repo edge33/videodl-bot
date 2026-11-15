@@ -3,26 +3,40 @@ FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a
 
 FROM base AS dependencies
 WORKDIR /app
-RUN npm install --global pnpm@12.18.0
+# renovate: datasource=npm depName=pnpm
+ARG PNPM_VERSION=12.21.0
+RUN npm install --global pnpm@${PNPM_VERSION}
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --prod --frozen-lockfile
 
 FROM base AS downloader
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+# renovate: datasource=repology depName=debian_12/ca-certificates versioning=deb
+ARG CA_CERTIFICATES_VERSION=20250419~deb12u2
+# renovate: datasource=repology depName=debian_12/curl versioning=deb
+ARG CURL_VERSION=7.88.1-10+deb12u15
+# Each release asset keeps its own digest so Renovate updates both architectures.
+ARG YT_DLP_AMD64=2026.10.26@767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795
+ARG YT_DLP_ARM64=2026.10.26@e87e9533e89fe5889abaa21f5114dfe7756d6aa6219b83551add04d48b18e483
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates=${CA_CERTIFICATES_VERSION} curl=${CURL_VERSION} \
     && case "$(dpkg --print-architecture)" in \
-      amd64) asset=yt-dlp_linux; checksum=767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795 ;; \
-      arm64) asset=yt-dlp_linux_aarch64; checksum=e87e9533e89fe5889abaa21f5114dfe7756d6aa6219b83551add04d48b18e483 ;; \
+      amd64) asset=yt-dlp_linux; release="$YT_DLP_AMD64" ;; \
+      arm64) asset=yt-dlp_linux_aarch64; release="$YT_DLP_ARM64" ;; \
       *) echo 'Supported image architectures: amd64, arm64.' >&2; exit 1 ;; \
     esac \
-    && curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/$asset" -o /yt-dlp \
+    && version="${release%@*}" && checksum="${release#*@}" \
+    && curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/download/$version/$asset" -o /yt-dlp \
     && echo "$checksum  /yt-dlp" | sha256sum -c - \
     && chmod 755 /yt-dlp
 
 FROM base AS runtime
+# renovate: datasource=repology depName=debian_12/ffmpeg versioning=deb
+ARG FFMPEG_VERSION=7:5.1.9-0+deb12u1
+# renovate: datasource=repology depName=debian_12/ca-certificates versioning=deb
+ARG CA_CERTIFICATES_VERSION=20250419~deb12u2
 ARG APP_UID=1000
 ARG APP_GID=1000
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg=7:5.1.9-0+deb12u1 ca-certificates=20250419~deb12u2 \
+    && apt-get install -y --no-install-recommends ffmpeg=${FFMPEG_VERSION} ca-certificates=${CA_CERTIFICATES_VERSION} \
     && rm -rf /var/lib/apt/lists/* \
     && test "$APP_UID" -gt 0 && test "$APP_GID" -gt 0 \
     && groupmod -g "$APP_GID" node \
