@@ -5,7 +5,7 @@ A private Telegram bot for saving YouTube downloads to a homelab folder.
 Stage 4 connects the persistent queue to yt-dlp and FFmpeg. Only the configured
 user can interact with the bot in a direct chat; other users and group chats are
 ignored. Downloads are saved locally, with progress and final filenames reported
-in Telegram. Docker deployment belongs to Stage 5.
+in Telegram. The container image is prepared for client deployment in Stage 5.
 
 ## Development
 
@@ -24,6 +24,7 @@ pnpm test
 | `pnpm dev`       | Run with Node's native file watcher                   |
 | `pnpm test`      | Run native Node tests with enforced 100% coverage     |
 | `pnpm typecheck` | Check types without emitting JavaScript               |
+| `pnpm lint`      | Check Biome formatting, lint, and imports             |
 | `pnpm check`     | Check Biome formatting, lint, imports, and TypeScript |
 | `pnpm format`    | Apply Biome formatting                                |
 
@@ -170,6 +171,70 @@ downloads. Deleted/uneditable status messages stop retrying the unchanged status
 them. Automated tests use controlled executable tools and the local Telegram
 stub, without real tokens or YouTube requests. Live playback checks remain part
 of the Stage 4 review checkpoint.
+
+## Container image
+
+This repository provides a Dockerfile and build-only PR checks; deployment
+orchestration belongs to clients. No Compose file is maintained here.
+
+The image pins Node 26.13.1 by digest, pnpm 12.18.0, yt-dlp 2026.10.26
+(with bundled EJS and architecture-specific SHA-256 checks), and Debian FFmpeg/
+FFprobe 5.1.9. It runs TypeScript directly as a non-root user. Supported image
+architectures are amd64 and arm64; only amd64 has been exercised locally.
+
+The Dockerfile creates `/downloads` and `/state`, owned by UID/GID 1000/1000.
+Clients can supply `--user UID:GID` to match their host storage owner. Writable
+cache data goes below `/tmp`, allowing arbitrary non-root runtime IDs without
+rebuilding. Bind mounts hide the image directories: existing host paths must
+have matching ownership. The startup entrypoint rejects root execution and
+inaccessible storage; application startup validates configuration.
+
+Keep credentials in a local environment file. The following example uses the
+existing `.env`, overrides its storage variables to the internal container paths,
+and mounts two existing host folders. Build the local image first. Use Docker's
+`--mount` form so missing host folders fail instead of being silently created
+with root ownership.
+
+```sh
+IMAGE=videodl-bot:local
+docker build -t "$IMAGE" .
+sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0750 /srv/videodl/downloads /srv/videodl/state
+docker run -d --name videodl-bot --init --restart unless-stopped --stop-timeout 60 \
+  --user "$(id -u):$(id -g)" \
+  --env-file .env --env DOWNLOAD_DIR=/downloads --env STATE_DIR=/state \
+  --mount type=bind,source=/srv/videodl/downloads,target=/downloads \
+  --mount type=bind,source=/srv/videodl/state,target=/state \
+  "$IMAGE"
+docker logs --tail=50 videodl-bot
+docker stop videodl-bot
+```
+
+The image needs outbound HTTPS/DNS and no published ports. Completed files use
+the runtime UID/GID. Run only one instance against a token or SQLite storage;
+stop local polling before starting a container. Each client supplies its own token,
+allowed user ID, and storage. Never put credentials into an image or build argument.
+The allowlist `.dockerignore` excludes `.env`, media, SQLite state, and Git data.
+
+Recreation preserves both bind mounts, including SQLite state and resumable
+staging. For a consistent backup, stop the container and copy both host directories,
+keeping SQLite's database and WAL files together. Restore original ownership and
+mount paths. To upgrade, build the new image, stop/remove the old container,
+and recreate it against the same mounts. Removing a container does not remove
+its host bind mounts.
+
+`.github/workflows/ci.yml` runs on pull requests only, with four validation steps:
+TypeScript (`tsc --noEmit`), lint/format/import checks, tests with coverage, and
+Docker image build. There is no separate image workflow or runtime smoke step in
+CI. No registry login or publishing runs. GHCR remains the choice for future publication.
+
+`APP_UID`/`APP_GID` remain optional Docker build arguments for custom images;
+clients can use `--user` without rebuilding. Tool upgrades require editing
+the Dockerfile's pins/checksums and rebuilding. Base-image upgrades require an
+intentional digest change. Retired Debian package pins require a deliberate
+update; transitive OS packages resolve at build time.
+
+Offline smoke checks cover storage, permissions, and queue persistence. Real
+Telegram polling, YouTube downloads, and playback remain manual acceptance.
 
 ## Implementation plan
 
