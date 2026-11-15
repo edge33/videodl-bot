@@ -267,7 +267,7 @@ files/jobs across recreation. Finish at the Stage 5 review checkpoint.
 ### Stage 5 handoff
 
 The owner changed scope after the initial Compose draft: remove Compose from this
-repository and build an image for clients instead; publication is now deferred. Existing host bind mounts
+repository and build an image for clients instead; publication was deferred at that checkpoint. Existing host bind mounts
 remain the storage choice. The Dockerfile creates and owns internal `/downloads`
 and `/state`; host mounts hide those directories and require matching ownership.
 A non-root entrypoint validates storage. Runtime `--user UID:GID` supports client
@@ -325,6 +325,43 @@ credentials; local lookup also encountered Docker Hub tag-listing rate/access
 limits. The existing Node digest was independently verified with `docker pull`.
 The amd64 image build and offline non-root/tool/storage smoke checks passed.
 Arm64 execution and real Telegram/YouTube acceptance remain outstanding.
+
+### Release automation follow-up
+
+The owner authorized Release Please and GHCR publication after release PR merge
+and tag creation. This supersedes the earlier build-only restriction; routine PR
+CI remains read-only and does not publish. Dependency PR #7 was verified merged
+on 2026-11-15 before starting `feat/release-ghcr` from updated `main`.
+
+`release.yml` manages root Node releases on `main` with a manifest baseline of
+0.1.0 and bootstrap commit `5845f1112064702fc0c386c7b25271b285675749`. Release PRs
+update the package version, changelog, and manifest. Conventional commits drive
+version selection; while pre-1.0, features/fixes bump patch and breaking changes
+bump minor. Merging the release PR creates a stable `vX.Y.Z` tag and GitHub release.
+Only a newly created release invokes the reusable publisher. It checks out the
+exact tag, requires a published stable release on `main` with matching package
+version, runs project checks, and builds/pushes amd64 and arm64 images to
+`ghcr.io/edge33/videodl-bot:X.Y.Z`. Only the current latest stable release updates
+`:latest`. A manual dispatch accepts an existing release tag to retry a failed
+publication; it creates no new version.
+
+Release Please uses a repository-scoped `RELEASE_PLEASE_TOKEN` so its generated
+PRs trigger CI. The publisher uses automatic `GITHUB_TOKEN` authentication with
+job-scoped package write permission. No secrets existed when setup was inspected;
+the owner must configure the release token and ensure Actions PR creation policy
+permits the automation. Check GHCR visibility after first publication for client
+pull access. No release PR has been merged, tag created, or image published during
+implementation. Real Telegram/YouTube and Stage 6 acceptance remain separate work.
+
+Validation: `pnpm check` and all 101 tests pass with 100% production line, branch,
+and function coverage. All three workflows pass actionlint 1.7.12, including shell
+checks. Release Please configuration passes its official JSON schema. Nine local
+fixture checks execute the publisher’s actual validation shell: stable release,
+lowercase registry naming, older-release retry, invalid/prerelease/missing tags,
+version mismatch, draft/prerelease release metadata, unrelated history, and tag/HEAD
+mismatch. The amd64 Docker build and `git diff --check` pass. Live Release Please,
+GHCR publication, and the multi-platform build await repository credentials and
+merging the automation/release PRs; no publishing test was run.
 
 ## Stage 6 — End-to-end acceptance
 

@@ -5,7 +5,8 @@ A private Telegram bot for saving YouTube downloads to a homelab folder.
 Stage 4 connects the persistent queue to yt-dlp and FFmpeg. Only the configured
 user can interact with the bot in a direct chat; other users and group chats are
 ignored. Downloads are saved locally, with progress and final filenames reported
-in Telegram. The container image is prepared for client deployment in Stage 5.
+in Telegram. Release automation publishes the container image to GHCR after a
+release PR merges.
 
 ## Development
 
@@ -174,8 +175,9 @@ of the Stage 4 review checkpoint.
 
 ## Container image
 
-This repository provides a Dockerfile and build-only PR checks; deployment
-orchestration belongs to clients. No Compose file is maintained here.
+This repository provides a Dockerfile, build-only PR checks, and release image
+publication to `ghcr.io/edge33/videodl-bot`. Deployment orchestration belongs to
+clients. No Compose file is maintained here.
 
 The Dockerfile pins Node by digest, pnpm, yt-dlp (with bundled EJS and
 architecture-specific SHA-256 checks), and Debian FFmpeg/FFprobe, CA certificates,
@@ -191,13 +193,14 @@ inaccessible storage; application startup validates configuration.
 
 Keep credentials in a local environment file. The following example uses the
 existing `.env`, overrides its storage variables to the internal container paths,
-and mounts two existing host folders. Build the local image first. Use Docker's
+and mounts two existing host folders. After the first successful release, pull a
+published version (replace `X.Y.Z` with that release version). Use Docker's
 `--mount` form so missing host folders fail instead of being silently created
 with root ownership.
 
 ```sh
-IMAGE=videodl-bot:local
-docker build -t "$IMAGE" .
+IMAGE=ghcr.io/edge33/videodl-bot:X.Y.Z
+docker pull "$IMAGE"
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0750 /srv/videodl/downloads /srv/videodl/state
 docker run -d --name videodl-bot --init --restart unless-stopped --stop-timeout 60 \
   --user "$(id -u):$(id -g)" \
@@ -218,14 +221,14 @@ The allowlist `.dockerignore` excludes `.env`, media, SQLite state, and Git data
 Recreation preserves both bind mounts, including SQLite state and resumable
 staging. For a consistent backup, stop the container and copy both host directories,
 keeping SQLite's database and WAL files together. Restore original ownership and
-mount paths. To upgrade, build the new image, stop/remove the old container,
+mount paths. To upgrade, pull the new version, stop/remove the old container,
 and recreate it against the same mounts. Removing a container does not remove
 its host bind mounts.
 
 `.github/workflows/ci.yml` runs on pull requests only, with four validation steps:
 TypeScript (`tsc --noEmit`), lint/format/import checks, tests with coverage, and
-Docker image build. There is no separate image workflow or runtime smoke step in
-CI. No registry login or publishing runs. GHCR remains the choice for future publication.
+Docker image build. PR CI has no runtime smoke step or registry credentials.
+Release publication runs separately after a release PR merges, as described below.
 
 `APP_UID`/`APP_GID` remain optional Docker build arguments for custom images;
 clients can use `--user` without rebuilding. Rebuild the image after merging
@@ -233,6 +236,60 @@ dependency updates; transitive OS packages resolve at build time.
 
 Offline smoke checks cover storage, permissions, and queue persistence. Real
 Telegram polling, YouTube downloads, and playback remain manual acceptance.
+
+## Releases and GHCR
+
+[Release Please](https://github.com/googleapis/release-please-action) runs on
+pushes to `main`, maintaining a release PR with `package.json` version changes,
+`CHANGELOG.md`, and `.release-please-manifest.json`. Squash merge PRs with
+Conventional Commit titles: `fix:` for fixes, `feat:` for features, and `!` or
+`BREAKING CHANGE:` for incompatible changes. The initial manifest uses the existing
+`0.1.0` version as its baseline; bootstrap history begins after dependency PR #7.
+Before `1.0.0`, features and fixes bump patch versions, while breaking changes
+bump minor versions. Review and merge the generated release PR to approve a release.
+
+Once that PR is merged, Release Please creates the `vX.Y.Z` tag and GitHub release.
+The same workflow then calls the image publisher, which checks out the exact tag,
+verifies it belongs to `main` and matches `package.json`, and repeats project checks
+before building and pushing `linux/amd64` and `linux/arm64` images. Publication
+runs only when a release is created. Ordinary PRs and main pushes do not publish.
+This explicit workflow call also avoids relying on a tag event to start another
+workflow. Do not create or push tags manually for the normal release process.
+
+Images use `ghcr.io/edge33/videodl-bot:X.Y.Z`. The `latest` alias is updated only
+when publishing GitHub’s current latest stable release; clients should prefer an
+exact version or digest for controlled upgrades. OCI labels identify the source,
+version, and tagged commit. The publish job alone has `packages: write` and logs
+in with the repository’s automatic `GITHUB_TOKEN`; no registry password is needed.
+
+One-time repository setup:
+
+1. Add an Actions secret named `RELEASE_PLEASE_TOKEN`: a fine-grained personal
+   access token restricted to this repository with **Contents**, **Pull requests**,
+   and **Issues** read/write permissions. A dedicated bot account is suitable.
+   Keep it outside source control and rotate it before expiry. A personal token
+   is used so release PR creation and updates trigger normal PR CI; the default
+   `GITHUB_TOKEN` suppresses those workflow events. See the
+   [Release Please credential requirements](https://github.com/googleapis/release-please-action#github-credentials).
+2. Ensure repository/organization Actions policy permits the release action to
+   create PRs and releases. If required by policy, enable “Allow GitHub Actions to
+   create and approve pull requests” in Settings → Actions → General.
+3. After the first publish, check the GHCR package visibility/access settings.
+   New packages default to private; make the package public for anonymous client
+   pulls, or give clients authenticated read access. See
+   [GitHub’s container registry permissions](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+
+The workflow reports a clear error if the release token has not been configured.
+Merge the automation PR, wait for its Release run, review the generated release PR,
+and merge it after CI passes. The resulting Release run publishes the image.
+No npm package is published (`package.json` remains private).
+
+If tagging succeeds but the image publish fails, use Actions → **Publish image** →
+**Run workflow** on `main` and supply the existing `vX.Y.Z` tag. This rebuilds that
+release without creating another version. It rejects missing, draft, prerelease,
+unrelated, and version-mismatched releases. Retrying an older release preserves
+`latest`. Never move an existing release tag. For local builds before the first
+publication, use `docker build -t videodl-bot:local .` and that local image name.
 
 ## Dependency updates
 
