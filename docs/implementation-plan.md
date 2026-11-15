@@ -12,11 +12,11 @@ Explicit follow-up requests can refine a stage or change these decisions.
 | 2. Private Telegram connection           | Complete, merged              | [PR #2](https://github.com/edge33/videodl-bot/pull/2) |
 | 3. Format selection and persistent queue | Complete, merged              | [PR #4](https://github.com/edge33/videodl-bot/pull/4) |
 | 4. Downloads and file publication        | Merged; manual checks pending | [PR #5](https://github.com/edge33/videodl-bot/pull/5) |
-| 5. Client image distribution             | Implemented, review pending   | `feat/homelab-compose`                                |
+| 5. Client image distribution             | Merged; manual checks pending | [PR #6](https://github.com/edge33/videodl-bot/pull/6) |
 | 6. End-to-end acceptance                 | Not started                   | After Stage 5 review                                  |
 
-Stage 4 was merged in PR #5. Stage 5 is implemented on `feat/homelab-compose`
-and is being revised for client image distribution. Real Telegram, YouTube playback, and the previously deferred
+Stage 4 was merged in PR #5. Stage 5 client image distribution was merged in
+PR #6 (verified on 2026-11-15). Real Telegram, YouTube playback, and the previously deferred
 review findings remain acceptance work. Stage 6 requires a separate request.
 Update this table and the handoff notes as work progresses; use GitHub to verify
 whether a PR is open or merged.
@@ -296,6 +296,35 @@ Negative checks rejected root, read-only storage, missing credentials, and missi
 host bind paths. Initial Compose-only validation is historical; Compose has since
 been removed. Arm64 and real client/Telegram/YouTube checks remain outstanding.
 No real bot instance was started or real Telegram/YouTube requests made.
+
+### Dependency maintenance follow-up
+
+The owner requested a full dependency refresh and Renovate automation. Verified
+stable releases on 2026-11-15: application/tooling packages, Node 26.13.1, the
+Node image digest, yt-dlp 2026.10.26, Debian media tools, and GitHub Actions were
+already current. Updated pnpm from 12.18.0 to 12.21.0 in package metadata,
+Dockerfile, and lockfile. Added explicit pins for downloader-stage curl and CA
+certificates. Historical handoff versions above record the original validation.
+
+Renovate covers npm and transitive lockfile maintenance, Node runtime/types,
+pnpm, Biome/schema, GitHub Actions, Docker images/syntax/digests, yt-dlp releases
+and both architecture checksums, and Bookworm packages via Repology’s `debian_12`
+repository (including security and updates). Native Debian lookups require gzip
+indexes, which Bookworm security does not publish, so they were replaced after
+the read-only lookup dry run exposed missing security package versions. Matching Node, pnpm, and Biome pins are grouped; no automerge.
+The yt-dlp asset version and digest travel together per architecture. The hosted
+Renovate GitHub App must be enabled for the repository and the configuration
+merged before automated PRs can run. No later acceptance stage is started.
+
+Validation: frozen pnpm installation, `pnpm check`, and all 101 tests passed
+with 100% production line/branch/function coverage. Strict Renovate configuration
+validation passed; local read-only extraction detected runtime, package, schema,
+workflow, image, and both yt-dlp checksum dependencies. Read-only lookup resolved
+all Debian pins through Repology. GitHub-backed lookups require the hosted app’s
+credentials; local lookup also encountered Docker Hub tag-listing rate/access
+limits. The existing Node digest was independently verified with `docker pull`.
+The amd64 image build and offline non-root/tool/storage smoke checks passed.
+Arm64 execution and real Telegram/YouTube acceptance remain outstanding.
 
 ## Stage 6 — End-to-end acceptance
 

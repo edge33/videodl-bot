@@ -9,8 +9,8 @@ in Telegram. The container image is prepared for client deployment in Stage 5.
 
 ## Development
 
-Use Node.js **26.13.1** and pnpm **12.18.0**. The versions are pinned in
-`.nvmrc` and `package.json`. With nvm installed, run `nvm install` and `nvm use`.
+Use the exact Node.js and pnpm versions pinned in `.nvmrc` and `package.json`.
+With nvm installed, run `nvm install` and `nvm use`.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -177,10 +177,10 @@ of the Stage 4 review checkpoint.
 This repository provides a Dockerfile and build-only PR checks; deployment
 orchestration belongs to clients. No Compose file is maintained here.
 
-The image pins Node 26.13.1 by digest, pnpm 12.18.0, yt-dlp 2026.10.26
-(with bundled EJS and architecture-specific SHA-256 checks), and Debian FFmpeg/
-FFprobe 5.1.9. It runs TypeScript directly as a non-root user. Supported image
-architectures are amd64 and arm64; only amd64 has been exercised locally.
+The Dockerfile pins Node by digest, pnpm, yt-dlp (with bundled EJS and
+architecture-specific SHA-256 checks), and Debian FFmpeg/FFprobe, CA certificates,
+and curl. See the Dockerfile for exact versions. It runs TypeScript directly as a non-root
+user. Supported image architectures are amd64 and arm64; only amd64 has been exercised locally.
 
 The Dockerfile creates `/downloads` and `/state`, owned by UID/GID 1000/1000.
 Clients can supply `--user UID:GID` to match their host storage owner. Writable
@@ -228,13 +228,34 @@ Docker image build. There is no separate image workflow or runtime smoke step in
 CI. No registry login or publishing runs. GHCR remains the choice for future publication.
 
 `APP_UID`/`APP_GID` remain optional Docker build arguments for custom images;
-clients can use `--user` without rebuilding. Tool upgrades require editing
-the Dockerfile's pins/checksums and rebuilding. Base-image upgrades require an
-intentional digest change. Retired Debian package pins require a deliberate
-update; transitive OS packages resolve at build time.
+clients can use `--user` without rebuilding. Rebuild the image after merging
+dependency updates; transitive OS packages resolve at build time.
 
 Offline smoke checks cover storage, permissions, and queue persistence. Real
 Telegram polling, YouTube downloads, and playback remain manual acceptance.
+
+## Dependency updates
+
+[`renovate.json`](renovate.json) configures reviewed update PRs for npm packages,
+transitive lockfile maintenance, Node (`.nvmrc`, package engines, Docker base image,
+and types), pnpm (package metadata and Dockerfile), Biome and its schema, GitHub
+Actions, Docker images/digests and Dockerfile syntax, yt-dlp releases with both
+architecture checksums, and pinned Debian packages. EJS ships with yt-dlp;
+FFprobe ships with FFmpeg. Debian lookups use Repology’s `debian_12` repository,
+including Bookworm updates and security packages; a distribution migration needs
+matching lookup changes. Renovate’s native Debian datasource currently requires
+gzip indexes, which Bookworm security does not publish.
+Node, pnpm, and Biome updates are grouped to keep their pins together. Stable
+major updates are offered for review; automerge is disabled.
+
+Enable the [Mend Renovate GitHub App](https://github.com/apps/renovate) for this
+repository and merge this configuration into the default branch to activate it.
+The repository configuration alone does not install or authorize the app. No bot
+token or scheduled workflow is required when using the hosted app. Update PRs run
+the existing CI checks. The Dependency Dashboard tracks pending updates.
+
+The Dockerfile custom managers follow the [Renovate custom manager presets](https://docs.renovatebot.com/presets-customManagers/);
+Debian lookups follow the [Repology datasource documentation](https://docs.renovatebot.com/modules/datasource/repology/).
 
 ## Implementation plan
 

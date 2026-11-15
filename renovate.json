@@ -1,0 +1,44 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "docker:pinDigests",
+    "customManagers:dockerfileVersions",
+    "customManagers:biomeVersions"
+  ],
+  "rangeStrategy": "pin",
+  "automerge": false,
+  "lockFileMaintenance": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "matchPackageNames": ["node", "@types/node"],
+      "groupName": "Node.js runtime and types"
+    },
+    {
+      "matchPackageNames": ["pnpm"],
+      "groupName": "pnpm"
+    },
+    {
+      "matchPackageNames": ["@biomejs/biome"],
+      "groupName": "Biome"
+    },
+    {
+      "matchDatasources": ["repology"],
+      "groupName": "Debian packages"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": [
+        "ARG YT_DLP_(?:AMD64|ARM64)=(?<currentValue>[^@\\s]+)@(?<currentDigest>[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "github-release-attachments",
+      "depNameTemplate": "yt-dlp/yt-dlp",
+      "versioningTemplate": "loose"
+    }
+  ]
+}
