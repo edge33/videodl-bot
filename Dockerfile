@@ -4,7 +4,7 @@ FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a
 FROM base AS dependencies
 WORKDIR /app
 # renovate: datasource=npm depName=pnpm
-ARG PNPM_VERSION=12.21.0
+ARG PNPM_VERSION=12.23.0
 RUN npm install --global pnpm@${PNPM_VERSION}
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --prod --frozen-lockfile
