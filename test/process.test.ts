@@ -31,6 +31,42 @@ test("can discard progress while capturing output", async () => {
   );
 });
 
+test("captures stdout exactly at the 4 MiB limit", async () => {
+  const output = await runProcess({
+    command: process.execPath,
+    args: ["-e", "process.stdout.write('x'.repeat(4 * 1024 * 1024))"],
+    signal: signal(),
+  });
+  assert.equal(output, "x".repeat(4 * 1024 * 1024));
+});
+
+test("terminates an overflowing tool and rejects instead of returning truncated output", async () => {
+  await assert.rejects(
+    runProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        "process.stdout.write('x'.repeat(5 * 1024 * 1024)); setInterval(() => {}, 1000)",
+      ],
+      signal: signal(),
+    }),
+    (error: unknown) =>
+      error instanceof DownloadError &&
+      /stdout exceeded the 4 MiB limit/.test(error.message),
+  );
+});
+
+test("measures the stdout limit in bytes for multibyte text", async () => {
+  await assert.rejects(
+    runProcess({
+      command: process.execPath,
+      args: ["-e", "process.stdout.write('é'.repeat(3 * 1024 * 1024))"],
+      signal: signal(),
+    }),
+    /stdout exceeded the 4 MiB limit/,
+  );
+});
+
 test("reports missing tools with a safe error", async () => {
   await assert.rejects(
     runProcess({ command: "/nonexistent/videodl", args: [], signal: signal() }),
@@ -38,28 +74,25 @@ test("reports missing tools with a safe error", async () => {
   );
 });
 
-test("classifies transient network failures without exposing stderr", async () => {
+test("reports tool failures without exposing stderr", async () => {
   await assert.rejects(
     runProcess({
       command: process.execPath,
       args: ["-e", "console.error('secret HTTP Error 503'); process.exit(1)"],
       signal: signal(),
     }),
-    (e: unknown) =>
-      e instanceof DownloadError &&
-      e.transient &&
-      !e.message.includes("secret"),
+    (e: unknown) => e instanceof DownloadError && !e.message.includes("secret"),
   );
 });
 
-test("classifies permanent tool failures", async () => {
+test("reports unavailable media safely", async () => {
   await assert.rejects(
     runProcess({
       command: process.execPath,
       args: ["-e", "console.error('secret unavailable'); process.exit(1)"],
       signal: signal(),
     }),
-    (e: unknown) => e instanceof DownloadError && !e.transient,
+    (e: unknown) => e instanceof DownloadError,
   );
 });
 
@@ -82,11 +115,15 @@ test("cancellation kills the process group including a child that ignores SIGTER
     command: process.execPath,
     args: [
       "-e",
-      `const {spawn}=require('node:child_process'); const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"],{stdio:'inherit'}); console.log(child.pid); setInterval(()=>{},1000);`,
+      `const {spawn}=require('node:child_process'); spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{}); console.log('ready:' + process.pid); setInterval(()=>{},1000)"],{stdio:'inherit'}); setInterval(()=>{},1000);`,
     ],
     signal: stop.signal,
     onLine: (line) => {
-      childPid = Number(line);
+      // Wait until the descendant has installed its signal handler. Ignore
+      // unrelated stdout rather than replacing an already captured PID.
+      const ready = /^ready:(\d+)$/.exec(line);
+      if (!ready) return;
+      childPid = Number(ready[1]);
       stop.abort();
     },
   });

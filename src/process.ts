@@ -1,12 +1,6 @@
 import { spawn } from "node:child_process";
 
-export class DownloadError extends Error {
-  readonly transient: boolean;
-  constructor(message: string, transient = false) {
-    super(message);
-    this.transient = transient;
-  }
-}
+export class DownloadError extends Error {}
 
 export interface ProcessRequest {
   command: string;
@@ -31,7 +25,8 @@ export const runProcess: ProcessRunner = ({
       env: { ...process.env, PYTHONUNBUFFERED: "1" },
     });
     let output = "";
-    let errors = "";
+    let outputBytes = 0;
+    let outputError: DownloadError | undefined;
     let pending = "";
     const stop = () => {
       if (!child.pid) return;
@@ -45,16 +40,23 @@ export const runProcess: ProcessRunner = ({
     };
     signal.addEventListener("abort", stop, { once: true });
     child.stdout.on("data", (data: Buffer) => {
-      output = (output + data.toString()).slice(-4 * 1024 * 1024);
+      outputBytes += data.length;
+      if (outputBytes > 4 * 1024 * 1024) {
+        outputError = new DownloadError(
+          "Media tool stdout exceeded the 4 MiB limit.",
+        );
+        stop();
+        return;
+      }
+      output += data.toString();
       pending += data.toString();
       const lines = pending.split("\n");
       pending = lines.pop() as string;
       for (const line of lines) onLine?.(line);
       pending = pending.slice(-8192);
     });
-    child.stderr.on("data", (data: Buffer) => {
-      errors = (errors + data.toString()).slice(-8192);
-    });
+    // Drain stderr without retaining credential-bearing tool diagnostics.
+    child.stderr.resume();
     child.once("error", () => {
       signal.removeEventListener("abort", stop);
       reject(new DownloadError("Required media tool could not start."));
@@ -62,17 +64,11 @@ export const runProcess: ProcessRunner = ({
     child.once("close", (code) => {
       signal.removeEventListener("abort", stop);
       if (signal.aborted) return reject(signal.reason);
+      if (outputError) return reject(outputError);
       if (code === 0) return resolve(output);
-      const transient =
-        /HTTP Error (429|5\d\d)|timed? out|Temporary failure|Connection (reset|refused)|network is unreachable/i.test(
-          errors,
-        );
       reject(
         new DownloadError(
-          transient
-            ? "Temporary download connection failure."
-            : "Media unavailable or incompatible; check installed media tools.",
-          transient,
+          "Media unavailable or incompatible; check installed media tools.",
         ),
       );
     });

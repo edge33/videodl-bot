@@ -1,18 +1,14 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { type TestContext, test } from "node:test";
 import { GrammyError, HttpError } from "grammy";
 import type { Update } from "grammy/types";
 import { createBot, describeError, runBot } from "../src/bot.ts";
 import { ConfigurationError } from "../src/config.ts";
-import { QueueStore } from "../src/queue.ts";
-import type { QueueServices } from "../src/queue-handlers.ts";
-import { type Downloader, QueueWorker } from "../src/worker.ts";
+import { DownloadSession } from "../src/download-session.ts";
+import type { Downloader, DownloadRequest } from "../src/downloader.ts";
+import { DownloadError } from "../src/process.ts";
 
 const config = {
   token: "123456:abcdefghijklmnopqrstuvwxyz_12345678",
@@ -64,7 +60,7 @@ function command(
 async function telegramStub(
   t: TestContext,
   handleCall: (method: string, payload: Record<string, unknown>) => unknown,
-  queue?: QueueServices,
+  downloads?: DownloadSession,
 ) {
   const calls: { method: string; payload: Record<string, unknown> }[] = [];
   const server = createServer(async (req, res) => {
@@ -105,7 +101,7 @@ async function telegramStub(
         botInfo,
         client: { apiRoot: `http://127.0.0.1:${address.port}` },
       },
-      queue,
+      downloads,
     ),
     calls,
   };
@@ -370,266 +366,267 @@ test("a completed startup connection cannot start polling after shutdown", async
   assert.equal(bot.isRunning(), false);
 });
 
-async function queueBot(
-  t: TestContext,
-  capacity = 20,
-  downloader?: Downloader,
-  wake?: () => void,
-) {
-  const directory = mkdtempSync(join(tmpdir(), "videodl-telegram-"));
-  const db = new DatabaseSync(join(directory, "queue.sqlite"));
-  const store = new QueueStore(db, directory, capacity);
-  const worker = downloader ? new QueueWorker(store, downloader) : undefined;
-  t.after(() => {
-    db.close();
-    rmSync(directory, { recursive: true, force: true });
-  });
-  const services: QueueServices = { store };
-  if (worker) services.worker = worker;
-  if (wake) services.wake = wake;
-  const transport = await telegramStub(
-    t,
-    (method, payload) => {
-      if (method === "sendMessage") return messageReply(payload.text);
-      assert(
-        ["answerCallbackQuery", "editMessageReplyMarkup"].includes(method),
-      );
-      return { ok: true, result: true };
-    },
-    services,
-  );
-  return { ...transport, store, directory, worker };
-}
-
-let messageId = 100;
-function videoMessage(
-  text = "https://youtu.be/abcDEF_12-3",
-  userId = config.allowedUserId,
-): Update {
-  const update = command(text, userId);
+function videoMessage(text = "https://youtu.be/abcDEF_12-3"): Update {
+  const update = command(text);
   assert(update.message);
-  update.message.message_id = ++messageId;
+  update.message.message_id = 101;
   delete update.message.entities;
   return update;
 }
 
-function selection(
-  menu: number,
-  format = "mp3",
-  userId = config.allowedUserId,
-  chatType: "private" | "group" = "private",
-): Update {
-  const message = command("/start", config.allowedUserId, chatType).message;
+function selection(data: string): Update {
+  const message = command("/start").message;
   assert(message);
+  message.message_id = 202;
   return {
-    update_id: ++messageId,
+    update_id: 2,
     callback_query: {
-      id: String(messageId),
-      from: { id: userId, is_bot: false, first_name: "Test user" },
+      id: "selection",
+      from: { id: config.allowedUserId, is_bot: false, first_name: "Owner" },
       chat_instance: "test",
       message,
-      data: `format:${menu}:${format}`,
+      data,
     },
   };
 }
 
-test("owner video messages offer exactly the three agreed buttons and persist queued status", async (t) => {
-  const { bot, calls, store } = await queueBot(t);
-  await bot.handleUpdate(videoMessage());
-  const keyboard = calls.at(-1)?.payload.reply_markup as {
-    inline_keyboard: { text: string; callback_data: string }[][];
+async function downloadBot(
+  t: TestContext,
+  download: Downloader = async () => "video.mp4",
+) {
+  const downloads = new DownloadSession(download);
+  t.after(() => downloads.stop());
+  const transport = await telegramStub(
+    t,
+    (method, payload) => {
+      if (method === "sendMessage") return messageReply(payload.text);
+      return { ok: true, result: true };
+    },
+    downloads,
+  );
+  const menu = async () => {
+    await transport.bot.handleUpdate(videoMessage());
+    const keyboard = transport.calls.at(-1)?.payload.reply_markup as {
+      inline_keyboard: { text: string; callback_data: string }[][];
+    };
+    return keyboard.inline_keyboard;
   };
+  return { ...transport, downloads, menu };
+}
+
+test("format selection downloads once, reports the filename, and consumes its menu", async (t) => {
+  const requests: DownloadRequest[] = [];
+  const done = Promise.withResolvers<void>();
+  const f = await downloadBot(t, async (request) => {
+    requests.push(request);
+    return "video.mp4";
+  });
+  f.bot.api.config.use(async (previous, method, payload, signal) => {
+    const result = await previous(method, payload, signal);
+    if (
+      method === "sendMessage" &&
+      "text" in payload &&
+      payload.text === "Done: video.mp4"
+    )
+      done.resolve();
+    return result;
+  });
+  const keyboard = await f.menu();
   assert.deepEqual(
-    keyboard.inline_keyboard.map((row) => row[0]?.text),
+    keyboard.map((row) => row[0]?.text),
     ["MP3 320 kbps", "MP4 up to 720p", "MP4 up to 1080p"],
   );
-  assert.equal(keyboard.inline_keyboard[0]?.[0]?.callback_data, "format:1:mp3");
-  await bot.handleUpdate(selection(1, "mp4_1080"));
-  assert.equal(store.list().length, 1);
-  assert.equal(store.get(1)?.format, "mp4_1080");
-  assert.equal(store.get(1)?.state, "queued");
-  assert.equal(store.get(1)?.status_chat_id, config.allowedUserId);
-  assert.equal(store.get(1)?.status_message_id, 1);
-  assert.match(String(calls.at(-1)?.payload.text), /#1.*queued/);
-  await bot.handleUpdate(selection(1, "mp3"));
-  assert.equal(store.list().length, 1);
-  assert.match(String(calls.at(-1)?.payload.text), /already used/);
-});
-
-test("queue callbacks reject other users, group chats, foreign menus, and unknown selections", async (t) => {
-  const { bot, calls, store } = await queueBot(t);
-  await bot.handleUpdate(videoMessage(undefined, 999));
-  await bot.handleUpdate(selection(1, "mp3", 999));
-  await bot.handleUpdate(selection(1, "mp3", config.allowedUserId, "group"));
-  assert.equal(calls.length, 0);
-  const foreign = store.menu("abcDEF_12-3", 999, 1);
-  await bot.handleUpdate(selection(foreign));
-  assert.match(String(calls.at(-1)?.payload.text), /unavailable/);
-  await bot.handleUpdate(selection(1, "invalid"));
-  assert.match(String(calls.at(-1)?.payload.text), /Unknown/);
-  assert.deepEqual(store.list(), []);
-});
-
-test("invalid links explain supported input without creating menus or jobs", async (t) => {
-  const { bot, calls, store } = await queueBot(t);
-  await bot.handleUpdate(
-    videoMessage("https://youtube.com/playlist?list=example"),
-  );
-  assert.match(
-    String(calls.at(-1)?.payload.text),
-    /one individual YouTube video URL/,
-  );
-  assert.deepEqual(store.list(), []);
-});
-
-test("callbacks share pending work and reuse completed files while full menus remain usable", async (t) => {
-  const { bot, calls, store, directory } = await queueBot(t, 1);
-  await bot.handleUpdate(videoMessage());
-  await bot.handleUpdate(selection(1));
-  await bot.handleUpdate(videoMessage());
-  await bot.handleUpdate(selection(2));
-  assert.equal(store.list().length, 1);
-  assert.match(String(calls.at(-3)?.payload.text), /existing job/);
-  await bot.handleUpdate(videoMessage("https://youtu.be/anotherId_1"));
-  // SQLite UPSERT may leave gaps in menu IDs; use the button's persisted ID.
-  const keyboard = calls.at(-1)?.payload.reply_markup as {
-    inline_keyboard: { callback_data: string }[][];
-  };
-  const data = keyboard.inline_keyboard[0]?.[0]?.callback_data;
+  const data = keyboard[2]?.[0]?.callback_data;
   assert(data);
-  const menu = Number(data.split(":")[1]);
-  await bot.handleUpdate(selection(menu));
-  assert.match(String(calls.at(-1)?.payload.text), /Queue full/);
-  store.claim();
-  writeFileSync(join(directory, "fixture.mp3"), "fixture");
-  store.complete(1, "fixture.mp3");
-  await bot.handleUpdate(selection(menu));
-  assert.equal(store.list().length, 2);
-  await bot.handleUpdate(videoMessage());
-  const lastKeyboard = calls.at(-1)?.payload.reply_markup as {
-    inline_keyboard: { callback_data: string }[][];
-  };
-  const lastData = lastKeyboard.inline_keyboard[0]?.[0]?.callback_data;
-  assert(lastData);
-  await bot.handleUpdate(selection(Number(lastData.split(":")[1])));
-  assert.match(
-    String(calls.at(-1)?.payload.text),
-    /completed.*fixture.mp3.*Completed/,
-  );
-  assert.equal(store.list().length, 2);
+  await f.bot.handleUpdate(selection(data));
+  await done.promise;
+  assert.deepEqual(requests, [{ videoId: "abcDEF_12-3", format: "mp4_1080" }]);
+  await f.bot.handleUpdate(selection(data));
+  assert.match(String(f.calls.at(-1)?.payload.text), /unavailable/);
+  assert.equal(requests.length, 1);
 });
 
-test("status, queue, and cancel commands expose durable job states and validate job IDs", async (t) => {
-  const { bot, calls, store } = await queueBot(t);
-  await bot.handleUpdate(command("/status"));
-  assert.equal(calls.at(-1)?.payload.text, "No matching jobs.");
-  await bot.handleUpdate(command("/queue"));
-  assert.equal(calls.at(-1)?.payload.text, "The queue is empty.");
-  await bot.handleUpdate(command("/cancel"));
-  assert.match(String(calls.at(-1)?.payload.text), /Use \/cancel/);
-  await bot.handleUpdate(videoMessage());
-  await bot.handleUpdate(selection(1));
-  await bot.handleUpdate(command("/queue"));
-  assert.match(String(calls.at(-1)?.payload.text), /#1.*queued/);
-  await bot.handleUpdate(command("/status"));
-  assert.match(String(calls.at(-1)?.payload.text), /#1.*queued/);
-  await bot.handleUpdate(command("/status 1"));
-  assert.match(String(calls.at(-1)?.payload.text), /#1.*queued/);
-  for (const argument of ["999", "invalid"]) {
-    await bot.handleUpdate(command(`/status ${argument}`));
-    assert.equal(calls.at(-1)?.payload.text, "No matching jobs.");
-  }
-  store.claim();
-  const callsBeforeUnauthorized = calls.length;
-  await bot.handleUpdate(command("/cancel 1", 999));
-  await bot.handleUpdate(command("/status", 999));
-  await bot.handleUpdate(command("/queue", config.allowedUserId, "group"));
-  assert.equal(calls.length, callsBeforeUnauthorized);
-  assert.equal(store.get(1)?.state, "active");
-  await bot.handleUpdate(command("/cancel 1"));
-  assert.equal(calls.at(-1)?.payload.text, "Job #1 cancelled.");
-  assert.equal(store.get(1)?.state, "cancelled");
-  await bot.handleUpdate(command("/status 1"));
-  assert.match(
-    String(calls.at(-1)?.payload.text),
-    /cancelled.*Cancelled by owner/,
-  );
-  await bot.handleUpdate(command("/cancel 1"));
-  assert.match(String(calls.at(-1)?.payload.text), /No queued or active/);
+test("rejects stale and malformed menus and invalid video links", async (t) => {
+  const f = await downloadBot(t);
+  await f.bot.handleUpdate(selection("invalid"));
+  await f.bot.handleUpdate(selection("format:missing:mp3"));
+  const first = await f.menu();
+  await f.menu();
+  await f.bot.handleUpdate(selection(first[0]?.[0]?.callback_data as string));
+  assert.match(String(f.calls.at(-1)?.payload.text), /unavailable/);
+  await f.bot.handleUpdate(videoMessage("https://youtube.com/playlist?list=x"));
+  assert.match(String(f.calls.at(-1)?.payload.text), /one individual YouTube/);
+  assert.equal(f.downloads.busy, false);
 });
 
-test("a failed Telegram notification leaves the queued job available through status", async (t) => {
-  const { bot, store } = await queueBot(t);
-  const menu = store.menu("abcDEF_12-3", config.allowedUserId, 1);
-  bot.api.config.use(async (previous, method, payload, signal) => {
-    if (method === "sendMessage") throw new Error("fixture transport failure");
-    return previous(method, payload, signal);
-  });
-  await assert.rejects(
-    bot.handleUpdate(selection(menu)),
-    /fixture transport failure/,
-  );
-  assert.equal(store.get(1)?.state, "queued");
-  assert.equal(store.get(1)?.status_message_id, null);
-  assert.deepEqual(store.select(menu, config.allowedUserId, "mp3"), {
-    kind: "unavailable",
-  });
-});
-
-test("cancel command aborts the active fixture downloader and leaves a durable cancelled outcome", {
-  timeout: 5000,
-}, async (t) => {
+test("busy downloads reject new requests and can be cancelled", async (t) => {
   const started = Promise.withResolvers<void>();
-  const { bot, store, worker } = await queueBot(t, 20, async (_job, signal) => {
+  const f = await downloadBot(t, async (_request, signal) => {
     started.resolve();
-    await new Promise((_, reject) =>
-      signal.addEventListener("abort", () => reject(new Error("cancelled")), {
+    await new Promise<void>((_, reject) =>
+      signal.addEventListener("abort", () => reject(signal.reason), {
         once: true,
       }),
     );
-    return "unreachable.mp3";
+    return "unreachable.mp4";
   });
-  assert(worker);
-  await bot.handleUpdate(videoMessage());
-  await bot.handleUpdate(selection(1));
-  const running = worker.drain(new AbortController().signal);
+  const keyboard = await f.menu();
+  const data = keyboard[0]?.[0]?.callback_data as string;
+  // Hold a second valid menu while the session is active.
+  f.downloads.start({ videoId: "anotherId_1", format: "mp3" }, async () => {});
   await started.promise;
-  await bot.handleUpdate(command("/cancel 1"));
-  await running;
-  assert.equal(store.get(1)?.state, "cancelled");
-  assert.equal(store.get(1)?.outcome, "Cancelled by owner.");
+  await f.bot.handleUpdate(videoMessage());
+  assert.match(String(f.calls.at(-1)?.payload.text), /Busy/);
+  await f.bot.handleUpdate(selection(data));
+  assert.match(String(f.calls.at(-1)?.payload.text), /Busy/);
+  await f.bot.handleUpdate(command("/cancel"));
+  assert.match(String(f.calls.at(-1)?.payload.text), /Cancellation requested/);
+  await f.downloads.stop();
+  await f.bot.handleUpdate(command("/cancel"));
+  assert.equal(f.calls.at(-1)?.payload.text, "No active download.");
 });
 
-test("new durable jobs wake the worker before Telegram I/O; shared jobs do not wake it", async (t) => {
-  let wakes = 0;
-  const { bot, store, calls } = await queueBot(t, 20, undefined, () => {
-    wakes++;
-    assert.equal(store.list().length, 1);
-    assert.equal(calls.at(-1)?.method, "sendMessage");
-  });
-  await bot.handleUpdate(videoMessage());
-  await bot.handleUpdate(selection(1));
-  assert.equal(wakes, 1);
-  await bot.handleUpdate(videoMessage());
-  await bot.handleUpdate(selection(2));
-  assert.equal(wakes, 1);
-});
-
-test("a Telegram acknowledgement failure cannot suppress the queued-job wake", async (t) => {
-  let wakes = 0;
-  const { bot, store } = await queueBot(t, 20, undefined, () => {
-    wakes++;
-  });
-  await bot.handleUpdate(videoMessage());
-  bot.api.config.use(async (previous, method, payload, signal) => {
-    if (method === "answerCallbackQuery")
-      throw new Error("fixture acknowledgement failed");
-    return previous(method, payload, signal);
-  });
-  await assert.rejects(
-    bot.handleUpdate(selection(1)),
-    /fixture acknowledgement failed/,
+test("a request losing the active slot during Telegram I/O receives a busy reply", async (t) => {
+  const f = await downloadBot(t);
+  const keyboard = await f.menu();
+  t.mock.method(f.downloads, "start", () => false);
+  await f.bot.handleUpdate(
+    selection(keyboard[0]?.[0]?.callback_data as string),
   );
-  assert.equal(wakes, 1);
-  assert.equal(store.get(1)?.state, "queued");
+  assert.match(String(f.calls.at(-1)?.payload.text), /Busy/);
+});
+
+test("a failed download reports its safe reason to Telegram without retrying", async (t) => {
+  const failed = Promise.withResolvers<void>();
+  let attempts = 0;
+  const f = await downloadBot(t, async () => {
+    attempts++;
+    throw new DownloadError("Media tool stdout exceeded the 4 MiB limit.");
+  });
+  f.bot.api.config.use(async (previous, method, payload, signal) => {
+    const result = await previous(method, payload, signal);
+    if (
+      method === "sendMessage" &&
+      "text" in payload &&
+      String(payload.text).startsWith("Download failed:")
+    )
+      failed.resolve();
+    return result;
+  });
+  const keyboard = await f.menu();
+  await f.bot.handleUpdate(
+    selection(keyboard[0]?.[0]?.callback_data as string),
+  );
+  await failed.promise;
+  assert.equal(attempts, 1);
+});
+
+for (const method of ["answerCallbackQuery", "deleteMessage"] as const) {
+  test(`does not download when ${method} fails`, async (t) => {
+    const logs: string[] = [];
+    t.mock.method(console, "error", (text: string) => logs.push(text));
+    let attempts = 0;
+    const f = await downloadBot(t, async () => {
+      attempts++;
+      return "video.mp4";
+    });
+    f.bot.api.config.use(async (previous, called, payload, signal) => {
+      if (called === method)
+        return {
+          ok: false,
+          error_code: 400,
+          description: "secret fixture error",
+        };
+      return previous(called, payload, signal);
+    });
+    const keyboard = await f.menu();
+    const data = keyboard[0]?.[0]?.callback_data as string;
+    await f.bot.handleUpdate(selection(data));
+    assert.equal(attempts, 0);
+    assert.equal(logs.length, 1);
+    assert.doesNotMatch(logs.join(""), /secret/);
+    assert.equal(
+      f.calls.at(-1)?.payload.text,
+      "Could not confirm your selection. Send the link again.",
+    );
+    assert.equal(f.downloads.busy, false);
+  });
+}
+
+test("edits one status message, deletes it, and sends completion as a new message", async (t) => {
+  const done = Promise.withResolvers<void>();
+  const f = await downloadBot(t, async (_request, _signal, progress) => {
+    assert(progress);
+    progress("Downloading 42%.");
+    return "video.mp4";
+  });
+  f.bot.api.config.use(async (previous, method, payload, signal) => {
+    const result = await previous(method, payload, signal);
+    if (
+      method === "sendMessage" &&
+      "text" in payload &&
+      payload.text === "Done: video.mp4"
+    )
+      done.resolve();
+    return result;
+  });
+  const keyboard = await f.menu();
+  await f.bot.handleUpdate(
+    selection(keyboard[0]?.[0]?.callback_data as string),
+  );
+  await done.promise;
+  assert(
+    f.calls.some(
+      (call) =>
+        call.method === "editMessageText" &&
+        call.payload.text === "Downloading 42%.",
+    ),
+  );
+  const initial = f.calls.find(
+    (call) =>
+      call.method === "sendMessage" &&
+      call.payload.text === "Download and converting",
+  );
+  assert(initial);
+  const deletions = f.calls.filter((call) => call.method === "deleteMessage");
+  assert.equal(deletions.length, 2);
+  assert.equal(deletions[0]?.payload.message_id, 202);
+  assert(!deletions.some((call) => call.payload.message_id === 101));
+  const deletion = deletions[1];
+  const edit = f.calls.find((call) => call.method === "editMessageText");
+  assert(deletion && edit);
+  assert.equal(deletion.payload.message_id, edit.payload.message_id);
+  assert.equal(f.calls.at(-2)?.method, "deleteMessage");
+  assert.equal(f.calls.at(-1)?.method, "sendMessage");
+});
+
+test("failed status deletion still sends the download outcome", async (t) => {
+  const logs: string[] = [];
+  t.mock.method(console, "error", (text: string) => logs.push(text));
+  const done = Promise.withResolvers<void>();
+  let deletes = 0;
+  const f = await downloadBot(t);
+  f.bot.api.config.use(async (previous, method, payload, signal) => {
+    if (method === "deleteMessage" && ++deletes > 1)
+      return {
+        ok: false,
+        error_code: 400,
+        description: "secret fixture error",
+      };
+    const result = await previous(method, payload, signal);
+    if (
+      method === "sendMessage" &&
+      "text" in payload &&
+      payload.text === "Done: video.mp4"
+    )
+      done.resolve();
+    return result;
+  });
+  const keyboard = await f.menu();
+  await f.bot.handleUpdate(
+    selection(keyboard[0]?.[0]?.callback_data as string),
+  );
+  await done.promise;
+  assert.equal(deletes, 2);
+  assert.deepEqual(logs, ["Could not delete download status."]);
 });

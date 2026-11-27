@@ -47,39 +47,23 @@ test("fails closed for missing, non-integer, negative, or unsafe user IDs", () =
   }
 });
 
-test("storage defaults and explicit absolute paths with a configurable queue limit", () => {
-  const defaults = loadStorageConfig({});
-  assert.equal(defaults.stateDir, resolve("state"));
-  assert.equal(defaults.downloadDir, resolve("downloads"));
-  assert.equal(defaults.maxPending, 20);
+test("storage defaults to downloads and accepts an absolute output path", () => {
+  assert.deepEqual(loadStorageConfig({}), {
+    downloadDir: resolve("downloads"),
+  });
+  assert.deepEqual(loadStorageConfig({ DOWNLOAD_DIR: " /tmp/downloads " }), {
+    downloadDir: "/tmp/downloads",
+  });
   assert.deepEqual(
-    loadStorageConfig({
-      STATE_DIR: " /tmp/state ",
-      DOWNLOAD_DIR: "/tmp/downloads",
-      QUEUE_MAX_PENDING: " 5 ",
-    }),
-    {
-      stateDir: "/tmp/state",
-      downloadDir: "/tmp/downloads",
-      maxPending: 5,
-    },
-  );
-  assert.deepEqual(
-    loadStorageConfig({ STATE_DIR: " ", DOWNLOAD_DIR: " " }),
-    defaults,
+    loadStorageConfig({ DOWNLOAD_DIR: " " }),
+    loadStorageConfig({}),
   );
 });
-
-test("storage rejects relative paths and invalid queue capacities without echoing values", () => {
-  for (const env of [{ STATE_DIR: "relative" }, { DOWNLOAD_DIR: "relative" }]) {
-    assert.throws(() => loadStorageConfig(env), /absolute paths/);
-  }
-  for (const value of ["", "0", "-1", "1.5", "1e2", "9007199254740992"]) {
-    assert.throws(
-      () => loadStorageConfig({ QUEUE_MAX_PENDING: value }),
-      /positive safe integer/,
-    );
-  }
+test("storage rejects relative paths", () => {
+  assert.throws(
+    () => loadStorageConfig({ DOWNLOAD_DIR: "relative" }),
+    /absolute path/,
+  );
 });
 
 test("download limits have agreed defaults and accept positive overrides", async () => {
