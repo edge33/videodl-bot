@@ -283,6 +283,6 @@ Debian lookups follow the [Repology datasource documentation](https://docs.renov
 
 ## Implementation plan
 
-See [docs/implementation-plan.md](docs/implementation-plan.md) for the agreed
-behavior, six stages, current progress, and acceptance criteria. Agent workflow
+See [docs/implementation-plan.md](docs/implementation-plan.md) for the deferred
+container E2E work in CI and its acceptance criteria. Agent workflow
 and project conventions are in [AGENTS.md](AGENTS.md).
