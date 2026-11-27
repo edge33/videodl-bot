@@ -4,7 +4,6 @@ import { type DownloadLimits, defaultLimits } from "./download-limits.ts";
 export interface Config {
   token: string;
   allowedUserId: number;
-  apiRoot?: string;
 }
 
 export class ConfigurationError extends Error {}
@@ -28,11 +27,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     );
   }
 
-  return {
-    token,
-    allowedUserId: Number(userId),
-    ...(env.TELEGRAM_API_ROOT ? { apiRoot: env.TELEGRAM_API_ROOT } : {}),
-  };
+  return { token, allowedUserId: Number(userId) };
 }
 
 export function loadStorageConfig(env: NodeJS.ProcessEnv): {
