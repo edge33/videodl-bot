@@ -252,39 +252,6 @@ and real-tool YouTube challenge compatibility remain review checks. No real toke
 or YouTube request was used. Stage 5 must provision pinned media tools and EJS in
 the image; implementation is recorded below.
 
-### Download metadata follow-up
-
-Investigated `TcRXjJ4vH1Q` from latest `main` on 2026-11-23 after an MP4 1080p
-failure. yt-dlp 2026.10.26 returned 11,722,794 bytes of metadata, with 195 formats
-and 21 audio languages. `runProcess` retains only the last 4 MiB of stdout, so
-parsing the full metadata failed before downloading. Replaying the captured
-response through the production runner reproduced the JSON parse failure;
-standalone downloading with the existing format selector succeeded.
-
-Metadata inspection now requests only `id`, `title`, `duration`, `live_status`,
-and `availability` through yt-dlp's JSON output template. This preserves the
-source policy and bounded process output without capturing unused format and
-manifest data. The executable-tool regression test models metadata above the
-buffer limit and exercises the production runner through MP4 1080p publication.
-It failed with the original full-metadata command and passed with the projection.
-
-The fixed production downloader downloaded, FFprobe-validated, and published the
-reported video as H.264/AAC MP4 at 1080p using temporary storage. No Telegram
-instance or credentials were used. `pnpm check` and all 101 tests passed with
-100% production line, branch, and function coverage. Deployment remains separate;
-this investigation does not complete Stage 6 acceptance.
-
-Follow-up: media-tool stdout now has an explicit 4 MiB byte limit. Overflow kills
-the process group and returns a safe permanent error instead of truncated JSON.
-Downloads emit JSON events to stdout with UTC timestamps, job IDs, formats,
-phases, tool timing/output sizes, retry attempts/backoff, completion,
-interruption, and safe failure reasons. Raw tool diagnostics, titles, filenames,
-URLs, arguments, and Telegram payloads are omitted. README documents server-log
-inspection. Automated tests cover log correlation and sensitive-data omission,
-JSON parse failures, unexpected tool failures, retry/interruption events, and
-stdout at/above the limit including multibyte text. `pnpm check` and 107 tests
-pass with 100% production line, branch, and function coverage.
-
 ## Stage 5 — Client image distribution
 
 - Provide an image that executes TypeScript on pinned Node 26 with pinned
