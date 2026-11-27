@@ -18,6 +18,13 @@ interface Probe {
   streams?: { codec_type?: string; codec_name?: string; height?: number }[];
 }
 
+function failureReason(error: unknown): string {
+  if (error instanceof DownloadError) return error.message;
+  if (error instanceof SyntaxError)
+    return "Invalid JSON returned by media tool.";
+  return "Unexpected download failure.";
+}
+
 export interface DownloadOptions {
   directory: string;
   store: QueueStore;
@@ -52,6 +59,23 @@ export function createDownloader(options: DownloadOptions): Downloader {
   };
 
   return async (job, shutdown) => {
+    let phase = "preparation";
+    const log = (
+      event: string,
+      details: Record<string, string | number> = {},
+    ) => {
+      console.info(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          event,
+          jobId: job.id,
+          format: job.format,
+          phase,
+          ...details,
+        }),
+      );
+    };
+    log("download_started");
     const stage = join(directory, ".staging", String(job.id));
     await mkdir(stage, { recursive: true });
     const startedAt = store.startedAt(job.id, Date.now());
@@ -65,11 +89,34 @@ export function createDownloader(options: DownloadOptions): Downloader {
       if (spaceCheck) return;
       void checkSpace().catch((error: unknown) => controller.abort(error));
     }, 1000);
-    const execute = (
+    const execute = async (
       command: string,
       args: string[],
       onLine?: (line: string) => void,
-    ) => run({ command, args, signal, ...(onLine ? { onLine } : {}) });
+    ) => {
+      const started = Date.now();
+      log("media_tool_started", { tool: command });
+      try {
+        const output = await run({
+          command,
+          args,
+          signal,
+          ...(onLine ? { onLine } : {}),
+        });
+        log("media_tool_completed", {
+          tool: command,
+          elapsedMs: Date.now() - started,
+          stdoutBytes: Buffer.byteLength(output),
+        });
+        return output;
+      } catch (error) {
+        log("media_tool_failed", {
+          tool: command,
+          elapsedMs: Date.now() - started,
+        });
+        throw error;
+      }
+    };
     const validate = async (path: string) => {
       const file = await stat(path);
       if (!file.isFile() || file.size === 0 || file.size > limits.fileBytes)
@@ -118,6 +165,8 @@ export function createDownloader(options: DownloadOptions): Downloader {
         // Record the intended name in SQLite before publication; it survives stage cleanup.
         const published = job.filename;
         if (published) {
+          phase = "reconciliation";
+          log("download_phase_started");
           try {
             await validate(join(directory, published));
             await rm(stage, { recursive: true, force: true });
@@ -144,11 +193,16 @@ export function createDownloader(options: DownloadOptions): Downloader {
         for (let attempt = job.retry_count; ; attempt++) {
           try {
             signal.throwIfAborted();
+            phase = "metadata";
+            log("download_phase_started", { attempt: attempt + 1 });
             await checkSpace();
             const metadata = JSON.parse(
               await execute("yt-dlp", [
                 ...common,
-                "--dump-single-json",
+                // Full metadata can exceed the process output buffer for videos
+                // with many audio tracks; only request fields used by policy.
+                "--print",
+                "%(.{id,title,duration,live_status,availability})j",
                 "--skip-download",
                 "--",
                 url,
@@ -169,6 +223,7 @@ export function createDownloader(options: DownloadOptions): Downloader {
               throw new DownloadError(
                 "Source is unavailable, restricted, live, or exceeds the duration limit.",
               );
+            log("metadata_validated", { durationSeconds: metadata.duration });
             const title =
               metadata.title
                 .normalize("NFKC")
@@ -202,6 +257,8 @@ export function createDownloader(options: DownloadOptions): Downloader {
             // source audio and .part downloads for supported resumption.
             if (job.format === "mp3")
               await rm(join(stage, "media.mp3"), { force: true });
+            phase = "download";
+            log("download_phase_started");
             options.progress?.(job, "Downloading.");
             await execute(
               "yt-dlp",
@@ -222,15 +279,22 @@ export function createDownloader(options: DownloadOptions): Downloader {
               (line) => {
                 const match = /^progress:\s*(\d+(?:\.\d+)?)%/.exec(line);
                 if (match) options.progress?.(job, `Downloading ${match[1]}%.`);
-                if (/^\[(Merger|ExtractAudio|VideoRemuxer)\]/.test(line))
+                if (/^\[(Merger|ExtractAudio|VideoRemuxer)\]/.test(line)) {
+                  phase = "processing";
+                  log("download_phase_started");
                   options.progress?.(job, "Processing.");
+                }
               },
             );
+            phase = "validation";
+            log("download_phase_started");
             options.progress?.(job, "Processing and validating.");
             const artifact = join(stage, `media.${extension}`);
             await checkSpace();
             await validate(artifact);
             signal.throwIfAborted();
+            phase = "publication";
+            log("download_phase_started");
             store.preparePublication(job.id, filename);
             // link is atomic and fails on an existing destination; rename would overwrite.
             await link(artifact, join(directory, filename));
@@ -245,6 +309,11 @@ export function createDownloader(options: DownloadOptions): Downloader {
             )
               throw error;
             store.retry(job.id);
+            log("download_retry_scheduled", {
+              attempt: attempt + 2,
+              delayMs: attempt === 0 ? 10000 : 30000,
+              reason: failureReason(error),
+            });
             await wait(attempt === 0 ? 10000 : 30000, signal);
           }
         }
@@ -257,6 +326,19 @@ export function createDownloader(options: DownloadOptions): Downloader {
         throw error;
       }
     };
-    return perform().finally(() => clearInterval(monitor));
+    return perform()
+      .then((filename) => {
+        log("download_completed");
+        return filename;
+      })
+      .catch((error: unknown) => {
+        if (shutdown.aborted) {
+          log("download_interrupted");
+        } else {
+          log("download_failed", { reason: failureReason(error) });
+        }
+        throw error;
+      })
+      .finally(() => clearInterval(monitor));
   };
 }
