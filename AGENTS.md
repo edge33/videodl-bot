@@ -2,15 +2,10 @@
 
 ## Start here
 
-- Before implementing or resuming a feature, read
-  [docs/implementation-plan.md](docs/implementation-plan.md) for agreed behavior,
-  stage status, and acceptance criteria. Use [README.md](README.md) for setup.
-- Work on the requested stage and finish at its review checkpoint. Start later
-  stages when the user requests them. Explicit user instructions define scope.
-- For a new stage, sync `main` and create a focused branch. Put review follow-ups
+- Read [README.md](README.md) for setup and current behavior before changing code.
+- Follow the user's requested scope and finish at the agreed review checkpoint.
+- For new work, sync `main` and create a focused branch. Put review follow-ups
   on the existing PR branch while that PR is open.
-- Update the plan's progress and handoff notes when a stage is completed or an
-  agreed decision changes. Verify PR/merge status before recording it.
 
 ## Implementation conventions
 
@@ -20,8 +15,8 @@
   syntax. Biome owns formatting, linting, and import organization.
 - Prefer small cohesive functions, explicit control flow, and early returns.
   Reuse current tools and patterns; introduce helpers for meaningful shared work.
-- Keep Telegram handlers, durable job operations, and downloader execution
-  separate as those capabilities are added. Validate external input at boundaries.
+- Keep Telegram handlers, download sessions, and downloader execution
+  separate. Validate external input at boundaries.
 - Keep changes focused. Pin new dependencies to exact stable versions with pnpm;
   preserve existing dependency versions unless an update is in scope.
 
@@ -45,7 +40,7 @@
 - Keep native Node coverage at 100% for production lines, branches, and functions.
   Cover observable behavior and failure cases. Document exclusions for process
   wiring or other files without meaningful application logic; keep authorization,
-  configuration, queue, and downloader logic covered.
+  configuration, download-session, and downloader logic covered.
 - Give each test one clear purpose. Share transport setup and fixtures; keep
   success and failure scenarios in separately named tests rather than boolean modes.
 - Review the diff for scope, credentials, and unintended generated or lockfile
