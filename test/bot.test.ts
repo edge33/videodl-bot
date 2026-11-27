@@ -99,10 +99,9 @@ async function telegramStub(
   assert(address && typeof address === "object");
   return {
     bot: createBot(
-      config,
+      { ...config, apiRoot: `http://127.0.0.1:${address.port}` },
       {
         botInfo,
-        client: { apiRoot: `http://127.0.0.1:${address.port}` },
       },
       downloads,
     ),

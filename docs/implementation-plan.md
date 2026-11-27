@@ -1,6 +1,6 @@
 # Container E2E in CI
 
-Status: deferred until requested.
+Status: implemented; local verification passed, PR CI result pending.
 
 Agreed on 2026-11-27; planned for a later request, not implemented by the
 simplification PR. Add an E2E step after the existing Docker build:
@@ -26,5 +26,11 @@ simplification PR. Add an E2E step after the existing Docker build:
 Acceptance: the CI container E2E step passes the success, failure, and cancellation
 scenarios above with no real service calls or credentials. Record the CI result
 and keep documentation aligned with the tested behavior. Controlled CI E2E does
-not establish live-service compatibility. No new CI job, API configuration, or
-test image is added yet.
+not establish live-service compatibility. The existing CI job now runs the harness after its Docker build.
+
+Handoff: `test/container-e2e` adds `e2e/run.sh`, a derived test image, a
+Telegram stub, and the optional `TELEGRAM_API_ROOT` setting. Review checkpoint:
+verify local checks and record the PR CI result before merge.
+
+Local verification: production Docker build, all three container scenarios,
+`pnpm check`, and `pnpm test` passed (100% production coverage).

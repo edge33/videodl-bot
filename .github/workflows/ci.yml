@@ -25,3 +25,5 @@ jobs:
         run: pnpm test
       - name: Docker build
         run: docker build --tag videodl-bot:ci .
+      - name: Container E2E
+        run: sh e2e/run.sh

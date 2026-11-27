@@ -32,7 +32,12 @@ export function createBot(
 ): Bot {
   const bot = new Bot(config.token, {
     ...options,
-    client: { timeoutSeconds: 45, ...options.client, sensitiveLogs: false },
+    client: {
+      ...(config.apiRoot ? { apiRoot: config.apiRoot } : {}),
+      timeoutSeconds: 45,
+      ...options.client,
+      sensitiveLogs: false,
+    },
   });
 
   bot.use(async (ctx, next) => {

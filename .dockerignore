@@ -7,3 +7,6 @@
 !src/**
 !docker/
 !docker/entrypoint.sh
+
+!e2e/
+!e2e/**

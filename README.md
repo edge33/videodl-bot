@@ -194,7 +194,7 @@ longer required.
 
 `.github/workflows/ci.yml` runs on pull requests only, with four validation steps:
 TypeScript (`tsc --noEmit`), lint/format/import checks, tests with coverage, and
-Docker image build. PR CI has no runtime smoke step or registry credentials.
+Docker image build followed by container E2E. PR CI uses no registry credentials.
 Release publication runs separately after a release PR merges, as described below.
 
 `APP_UID`/`APP_GID` remain optional Docker build arguments for custom images;
@@ -286,3 +286,14 @@ Debian lookups follow the [Repology datasource documentation](https://docs.renov
 See [docs/implementation-plan.md](docs/implementation-plan.md) for the deferred
 container E2E work in CI and its acceptance criteria. Agent workflow
 and project conventions are in [AGENTS.md](AGENTS.md).
+
+## Container E2E
+
+After `docker build -t videodl-bot:ci .`, run `sh e2e/run.sh`.
+The harness derives a test image with a controlled yt-dlp executable and retains
+real FFmpeg/FFprobe. It tests success, failure, and cancellation over an internal
+Docker network with a Telegram stub and synthetic credentials. Containers and
+the network are removed on exit; download storage lives in disposable containers.
+`TELEGRAM_API_ROOT` optionally overrides grammY's API root (for example
+`http://telegram:8080`); omit it to use Telegram normally.
+These checks do not establish compatibility with live Telegram or YouTube.

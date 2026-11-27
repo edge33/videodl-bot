@@ -89,3 +89,14 @@ test("download limits have agreed defaults and accept positive overrides", async
       /positive safe integer/,
     );
 });
+
+test("loads an optional Telegram API root", () => {
+  assert.equal(
+    loadConfig({
+      TELEGRAM_BOT_API_KEY: token,
+      TELEGRAM_ALLOWED_USER_ID: "42",
+      TELEGRAM_API_ROOT: "http://telegram:8080",
+    }).apiRoot,
+    "http://telegram:8080",
+  );
+});
