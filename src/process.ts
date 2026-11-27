@@ -31,6 +31,8 @@ export const runProcess: ProcessRunner = ({
       env: { ...process.env, PYTHONUNBUFFERED: "1" },
     });
     let output = "";
+    let outputBytes = 0;
+    let outputError: DownloadError | undefined;
     let errors = "";
     let pending = "";
     const stop = () => {
@@ -45,7 +47,15 @@ export const runProcess: ProcessRunner = ({
     };
     signal.addEventListener("abort", stop, { once: true });
     child.stdout.on("data", (data: Buffer) => {
-      output = (output + data.toString()).slice(-4 * 1024 * 1024);
+      outputBytes += data.length;
+      if (outputBytes > 4 * 1024 * 1024) {
+        outputError = new DownloadError(
+          "Media tool stdout exceeded the 4 MiB limit.",
+        );
+        stop();
+        return;
+      }
+      output += data.toString();
       pending += data.toString();
       const lines = pending.split("\n");
       pending = lines.pop() as string;
@@ -62,6 +72,7 @@ export const runProcess: ProcessRunner = ({
     child.once("close", (code) => {
       signal.removeEventListener("abort", stop);
       if (signal.aborted) return reject(signal.reason);
+      if (outputError) return reject(outputError);
       if (code === 0) return resolve(output);
       const transient =
         /HTTP Error (429|5\d\d)|timed? out|Temporary failure|Connection (reset|refused)|network is unreachable/i.test(

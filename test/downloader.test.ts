@@ -17,6 +17,8 @@ import { DownloadError, type ProcessRunner } from "../src/process.ts";
 import { type Job, QueueStore } from "../src/queue.ts";
 
 async function fixture(t: TestContext, format: Job["format"] = "mp3") {
+  const logs: Record<string, unknown>[] = [];
+  t.mock.method(console, "info", (line: string) => logs.push(JSON.parse(line)));
   const directory = await mkdtemp(join(tmpdir(), "download-"));
   const db = new DatabaseSync(":memory:");
   const store = new QueueStore(db, directory);
@@ -50,7 +52,7 @@ async function fixture(t: TestContext, format: Job["format"] = "mp3") {
     signal.throwIfAborted();
     calls.push([command, ...args]);
     if (command === "ffprobe") return JSON.stringify(probe);
-    if (args.includes("--dump-single-json")) return JSON.stringify(metadata);
+    if (args.includes("--print")) return JSON.stringify(metadata);
     onLine?.("noise");
     onLine?.("progress: 25.5%");
     onLine?.("[Merger] Merging formats");
@@ -72,8 +74,73 @@ async function fixture(t: TestContext, format: Job["format"] = "mp3") {
     freeBytes: async () => 10 * 1024 ** 3,
     wait: async () => {},
   };
-  return { directory, store, job, calls, metadata, probe, options, run };
+  return { directory, store, job, calls, metadata, probe, options, run, logs };
 }
+
+test("logs job phases and tool timing without exposing titles, URLs, or raw output", async (t) => {
+  const f = await fixture(t);
+  f.metadata.title = "private-title-secret";
+  await createDownloader(f.options)(f.job, new AbortController().signal);
+  assert.deepEqual(
+    f.logs
+      .filter((entry) => entry.event === "download_phase_started")
+      .map((entry) => entry.phase),
+    ["metadata", "download", "processing", "validation", "publication"],
+  );
+  assert.equal(f.logs[0]?.event, "download_started");
+  assert.equal(f.logs.at(-1)?.event, "download_completed");
+  for (const entry of f.logs) {
+    assert.equal(entry.jobId, f.job.id);
+    assert.equal(entry.format, f.job.format);
+    assert.equal(
+      new Date(String(entry.timestamp)).toISOString(),
+      entry.timestamp,
+    );
+  }
+  const tools = f.logs.filter(
+    (entry) => entry.event === "media_tool_completed",
+  );
+  assert.equal(tools.length, 3);
+  for (const entry of tools) {
+    assert(Number(entry.elapsedMs) >= 0);
+    assert(Number(entry.stdoutBytes) >= 0);
+  }
+  assert.doesNotMatch(
+    JSON.stringify(f.logs),
+    /private-title-secret|https:|abcDEF_12-3/,
+  );
+});
+
+test("logs invalid metadata JSON safely with the failing phase", async (t) => {
+  const f = await fixture(t);
+  f.options.run = async () => "secret-token-and-payload";
+  await assert.rejects(
+    createDownloader(f.options)(f.job, new AbortController().signal),
+    SyntaxError,
+  );
+  assert.equal(f.logs.at(-1)?.event, "download_failed");
+  assert.equal(f.logs.at(-1)?.phase, "metadata");
+  assert.equal(f.logs.at(-1)?.reason, "Invalid JSON returned by media tool.");
+  assert.doesNotMatch(JSON.stringify(f.logs), /secret-token-and-payload/);
+});
+
+test("logs unexpected tool failures without serializing raw errors", async (t) => {
+  const f = await fixture(t);
+  f.options.run = async () => {
+    throw new Error("secret-token-and-payload");
+  };
+  await assert.rejects(
+    createDownloader(f.options)(f.job, new AbortController().signal),
+    /secret-token-and-payload/,
+  );
+  assert(
+    f.logs.some(
+      (entry) => entry.event === "media_tool_failed" && entry.tool === "yt-dlp",
+    ),
+  );
+  assert.equal(f.logs.at(-1)?.reason, "Unexpected download failure.");
+  assert.doesNotMatch(JSON.stringify(f.logs), /secret-token-and-payload/);
+});
 
 for (const format of ["mp3", "mp4_720", "mp4_1080"] as const) {
   test(`publishes validated ${format} with bounded sanitized name and lower-resolution fallback`, async (t) => {
@@ -120,6 +187,15 @@ test("retries transient failures twice with durable counts and 10/30 second back
   await createDownloader(f.options)(f.job, new AbortController().signal);
   assert.deepEqual(waits, [10000, 30000]);
   assert.equal(f.store.get(f.job.id)?.retry_count, 2);
+  assert.deepEqual(
+    f.logs
+      .filter((entry) => entry.event === "download_retry_scheduled")
+      .map(({ attempt, delayMs, reason }) => ({ attempt, delayMs, reason })),
+    [
+      { attempt: 2, delayMs: 10000, reason: "network" },
+      { attempt: 3, delayMs: 30000, reason: "network" },
+    ],
+  );
 });
 
 test("exhausted retries remove staging without publishing", async (t) => {
@@ -280,7 +356,7 @@ test("missing published artifact resumes using its stage", async (t) => {
   f.store.preparePublication(f.job.id, "missing.mp3");
   f.job.filename = "missing.mp3";
   await createDownloader(f.options)(f.job, new AbortController().signal);
-  assert(f.calls.some((c) => c.includes("--dump-single-json")));
+  assert(f.calls.some((c) => c.includes("--print")));
 });
 
 test("invalid published artifact fails validation", async (t) => {
@@ -316,6 +392,7 @@ test("shutdown preserves partial work for resume", async (t) => {
   };
   await assert.rejects(createDownloader(f.options)(f.job, stop.signal));
   assert.deepEqual(await readdir(join(f.directory, ".staging")), ["1"]);
+  assert.equal(f.logs.at(-1)?.event, "download_interrupted");
 });
 
 test("owner cancellation removes partial work", async (t) => {
@@ -328,6 +405,7 @@ test("owner cancellation removes partial work", async (t) => {
   };
   await assert.rejects(createDownloader(f.options)(f.job, stop.signal));
   assert.deepEqual(await readdir(join(f.directory, ".staging")), []);
+  assert.equal(f.logs.at(-1)?.event, "download_interrupted");
 });
 
 test("deadline aborts a running tool and removes staging", async (t) => {
@@ -367,12 +445,30 @@ test("free-space monitoring aborts long processing", async (t) => {
   );
 });
 
-test("runs controlled executable tools with the default runner and disk checks", async (t) => {
-  const f = await fixture(t);
+test("publishes with the default runner when full metadata exceeds its output buffer", async (t) => {
+  const f = await fixture(t, "mp4_1080");
   const bin = join(f.directory, "bin");
   await mkdir(bin);
   const { chmod } = await import("node:fs/promises");
-  const script = `#!${process.execPath}\nconst fs = require('node:fs'); const path = require('node:path'); const args=process.argv.slice(2); if(path.basename(process.argv[1])==='ffprobe') console.log(${JSON.stringify(JSON.stringify(f.probe))}); else if(args.includes('--dump-single-json')) console.log(${JSON.stringify(JSON.stringify(f.metadata))}); else fs.writeFileSync(args[args.indexOf('-o')+1].replace('%(ext)s','mp3'), 'fixture');\n`;
+  const script = `#!${process.execPath}
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+const metadata = ${JSON.stringify(f.metadata)};
+// Model a large format/manifest payload, as returned for multilingual videos.
+metadata.formats = [{ manifest: 'x'.repeat(5 * 1024 * 1024) }];
+if (path.basename(process.argv[1]) === 'ffprobe') {
+  console.log(${JSON.stringify(JSON.stringify(f.probe))});
+} else if (args.includes('--dump-single-json')) {
+  console.log(JSON.stringify(metadata));
+} else if (args.includes('--print')) {
+  const template = args[args.indexOf('--print') + 1];
+  const fields = /^%\\(\\.\\{([^}]+)\\}\\)j$/.exec(template)[1].split(',');
+  console.log(JSON.stringify(Object.fromEntries(fields.map(key => [key, metadata[key]]))));
+} else {
+  fs.writeFileSync(args[args.indexOf('-o') + 1].replace('%(ext)s', 'mp4'), 'fixture');
+}
+`;
   for (const name of ["yt-dlp", "ffprobe"]) {
     const path = join(bin, name);
     await writeFile(path, script);
@@ -388,7 +484,7 @@ test("runs controlled executable tools with the default runner and disk checks",
   delete f.options.wait;
   assert.match(
     await createDownloader(f.options)(f.job, new AbortController().signal),
-    /mp3-1.mp3$/,
+    /mp4_1080-1.mp4$/,
   );
 });
 

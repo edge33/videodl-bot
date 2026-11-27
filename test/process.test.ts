@@ -31,6 +31,43 @@ test("can discard progress while capturing output", async () => {
   );
 });
 
+test("captures stdout exactly at the 4 MiB limit", async () => {
+  const output = await runProcess({
+    command: process.execPath,
+    args: ["-e", "process.stdout.write('x'.repeat(4 * 1024 * 1024))"],
+    signal: signal(),
+  });
+  assert.equal(output, "x".repeat(4 * 1024 * 1024));
+});
+
+test("terminates an overflowing tool and rejects instead of returning truncated output", async () => {
+  await assert.rejects(
+    runProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        "process.stdout.write('x'.repeat(5 * 1024 * 1024)); setInterval(() => {}, 1000)",
+      ],
+      signal: signal(),
+    }),
+    (error: unknown) =>
+      error instanceof DownloadError &&
+      !error.transient &&
+      /stdout exceeded the 4 MiB limit/.test(error.message),
+  );
+});
+
+test("measures the stdout limit in bytes for multibyte text", async () => {
+  await assert.rejects(
+    runProcess({
+      command: process.execPath,
+      args: ["-e", "process.stdout.write('é'.repeat(3 * 1024 * 1024))"],
+      signal: signal(),
+    }),
+    /stdout exceeded the 4 MiB limit/,
+  );
+});
+
 test("reports missing tools with a safe error", async () => {
   await assert.rejects(
     runProcess({ command: "/nonexistent/videodl", args: [], signal: signal() }),
