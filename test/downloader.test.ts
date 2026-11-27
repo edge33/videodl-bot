@@ -9,28 +9,26 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { type TestContext, test } from "node:test";
 import { defaultLimits } from "../src/download-limits.ts";
+import type { DownloadRequest } from "../src/downloader.ts";
 import { createDownloader, type DownloadOptions } from "../src/downloader.ts";
 import { DownloadError, type ProcessRunner } from "../src/process.ts";
-import { type Job, QueueStore } from "../src/queue.ts";
 
-async function fixture(t: TestContext, format: Job["format"] = "mp3") {
+async function fixture(
+  t: TestContext,
+  format: DownloadRequest["format"] = "mp3",
+) {
   const logs: Record<string, unknown>[] = [];
   t.mock.method(console, "info", (line: string) => logs.push(JSON.parse(line)));
   const directory = await mkdtemp(join(tmpdir(), "download-"));
-  const db = new DatabaseSync(":memory:");
-  const store = new QueueStore(db, directory);
-  store.select(store.menu("abcDEF_12-3", 123, 1), 123, format);
-  const job = store.claim() as Job;
+  const job: DownloadRequest = { videoId: "abcDEF_12-3", format };
   t.after(async () => {
-    db.close();
     await rm(directory, { recursive: true, force: true });
   });
   const calls: string[][] = [];
   const metadata = {
-    id: job.video_id,
+    id: job.videoId,
     title: "A / title ♥",
     duration: 60,
     live_status: "not_live",
@@ -57,11 +55,9 @@ async function fixture(t: TestContext, format: Job["format"] = "mp3") {
     onLine?.("progress: 25.5%");
     onLine?.("[Merger] Merging formats");
     await writeFile(
-      join(
-        directory,
-        ".staging",
-        String(job.id),
-        `media.${format === "mp3" ? "mp3" : "mp4"}`,
+      (args[args.indexOf("-o") + 1] as string).replace(
+        "%(ext)s",
+        format === "mp3" ? "mp3" : "mp4",
       ),
       "media",
     );
@@ -69,12 +65,10 @@ async function fixture(t: TestContext, format: Job["format"] = "mp3") {
   };
   const options: DownloadOptions = {
     directory,
-    store,
     run,
     freeBytes: async () => 10 * 1024 ** 3,
-    wait: async () => {},
   };
-  return { directory, store, job, calls, metadata, probe, options, run, logs };
+  return { directory, job, calls, metadata, probe, options, run, logs };
 }
 
 test("logs job phases and tool timing without exposing titles, URLs, or raw output", async (t) => {
@@ -90,7 +84,7 @@ test("logs job phases and tool timing without exposing titles, URLs, or raw outp
   assert.equal(f.logs[0]?.event, "download_started");
   assert.equal(f.logs.at(-1)?.event, "download_completed");
   for (const entry of f.logs) {
-    assert.equal(entry.jobId, f.job.id);
+    assert.match(String(entry.downloadId), /^[0-9a-f-]{36}$/);
     assert.equal(entry.format, f.job.format);
     assert.equal(
       new Date(String(entry.timestamp)).toISOString(),
@@ -145,8 +139,6 @@ test("logs unexpected tool failures without serializing raw errors", async (t) =
 for (const format of ["mp3", "mp4_720", "mp4_1080"] as const) {
   test(`publishes validated ${format} with bounded sanitized name and lower-resolution fallback`, async (t) => {
     const f = await fixture(t, format);
-    const progress: string[] = [];
-    f.options.progress = (_job, text) => progress.push(text);
     const name = await createDownloader(f.options)(
       f.job,
       new AbortController().signal,
@@ -164,65 +156,8 @@ for (const format of ["mp3", "mp4_720", "mp4_1080"] as const) {
           a.includes(`height<=${format === "mp4_720" ? 720 : 1080}`),
         ),
       );
-    assert.deepEqual(progress, [
-      "Downloading.",
-      "Downloading 25.5%.",
-      "Processing.",
-      "Processing and validating.",
-    ]);
   });
 }
-
-test("retries transient failures twice with durable counts and 10/30 second backoff", async (t) => {
-  const f = await fixture(t);
-  let failures = 0;
-  const waits: number[] = [];
-  f.options.run = async (request) => {
-    if (failures++ < 2) throw new DownloadError("network", true);
-    return f.run(request);
-  };
-  f.options.wait = async (ms) => {
-    waits.push(ms);
-  };
-  await createDownloader(f.options)(f.job, new AbortController().signal);
-  assert.deepEqual(waits, [10000, 30000]);
-  assert.equal(f.store.get(f.job.id)?.retry_count, 2);
-  assert.deepEqual(
-    f.logs
-      .filter((entry) => entry.event === "download_retry_scheduled")
-      .map(({ attempt, delayMs, reason }) => ({ attempt, delayMs, reason })),
-    [
-      { attempt: 2, delayMs: 10000, reason: "network" },
-      { attempt: 3, delayMs: 30000, reason: "network" },
-    ],
-  );
-});
-
-test("exhausted retries remove staging without publishing", async (t) => {
-  const f = await fixture(t);
-  f.options.run = async () => {
-    throw new DownloadError("network", true);
-  };
-  await assert.rejects(
-    createDownloader(f.options)(f.job, new AbortController().signal),
-    /network/,
-  );
-  assert.equal(f.store.get(f.job.id)?.retry_count, 2);
-  assert.deepEqual(await readdir(join(f.directory, ".staging")), []);
-});
-
-test("restart does not reset the retry allowance", async (t) => {
-  const f = await fixture(t);
-  f.job.retry_count = 2;
-  f.options.run = async () => {
-    throw new DownloadError("network", true);
-  };
-  await assert.rejects(
-    createDownloader(f.options)(f.job, new AbortController().signal),
-    /network/,
-  );
-  assert.equal(f.store.get(f.job.id)?.retry_count, 0);
-});
 
 for (const [field, value] of Object.entries({
   id: "wrong",
@@ -286,7 +221,13 @@ test("rejects an empty converted output", async (t) => {
   f.options.run = async (request) => {
     const result = await f.run(request);
     if (request.args.includes("-o"))
-      await writeFile(join(f.directory, ".staging", "1", "media.mp3"), "");
+      await writeFile(
+        (request.args[request.args.indexOf("-o") + 1] as string).replace(
+          "%(ext)s",
+          "mp3",
+        ),
+        "",
+      );
     return result;
   };
   await assert.rejects(
@@ -332,74 +273,10 @@ for (const format of ["mp3", "mp4_720"] as const) {
   });
 }
 
-test("reconciles publication after a crash without downloading again", async (t) => {
-  const f = await fixture(t);
-  const stage = join(f.directory, ".staging", "1");
-  await mkdir(stage, { recursive: true });
-  f.store.preparePublication(f.job.id, "published.mp3");
-  f.job.filename = "published.mp3";
-  await writeFile(join(f.directory, "published.mp3"), "media");
-  assert.equal(
-    await createDownloader(f.options)(f.job, new AbortController().signal),
-    "published.mp3",
-  );
-  assert.deepEqual(
-    f.calls.map((c) => c[0]),
-    ["ffprobe"],
-  );
-});
-
-test("missing published artifact resumes using its stage", async (t) => {
-  const f = await fixture(t);
-  const stage = join(f.directory, ".staging", "1");
-  await mkdir(stage, { recursive: true });
-  f.store.preparePublication(f.job.id, "missing.mp3");
-  f.job.filename = "missing.mp3";
-  await createDownloader(f.options)(f.job, new AbortController().signal);
-  assert(f.calls.some((c) => c.includes("--print")));
-});
-
-test("invalid published artifact fails validation", async (t) => {
-  const f = await fixture(t);
-  const stage = join(f.directory, ".staging", "1");
-  await mkdir(stage, { recursive: true });
-  f.store.preparePublication(f.job.id, "published.mp3");
-  f.job.filename = "published.mp3";
-  await writeFile(join(f.directory, "published.mp3"), "");
-  await assert.rejects(
-    createDownloader(f.options)(f.job, new AbortController().signal),
-    /empty/,
-  );
-});
-
-test("never overwrites an existing destination", async (t) => {
-  const f = await fixture(t);
-  const name = "A  title [abcDEF_12-3] mp3-1.mp3";
-  await writeFile(join(f.directory, name), "original");
-  await assert.rejects(
-    createDownloader(f.options)(f.job, new AbortController().signal),
-    { code: "EEXIST" },
-  );
-  assert.equal(await readFile(join(f.directory, name), "utf8"), "original");
-});
-
-test("shutdown preserves partial work for resume", async (t) => {
+test("shutdown removes partial work instead of retaining it", async (t) => {
   const f = await fixture(t);
   const stop = new AbortController();
   f.options.run = async () => {
-    stop.abort();
-    throw stop.signal.reason;
-  };
-  await assert.rejects(createDownloader(f.options)(f.job, stop.signal));
-  assert.deepEqual(await readdir(join(f.directory, ".staging")), ["1"]);
-  assert.equal(f.logs.at(-1)?.event, "download_interrupted");
-});
-
-test("owner cancellation removes partial work", async (t) => {
-  const f = await fixture(t);
-  const stop = new AbortController();
-  f.options.run = async () => {
-    f.store.cancel(f.job.id);
     stop.abort();
     throw stop.signal.reason;
   };
@@ -481,114 +358,10 @@ if (path.basename(process.argv[1]) === 'ffprobe') {
   });
   delete f.options.run;
   delete f.options.freeBytes;
-  delete f.options.wait;
   assert.match(
     await createDownloader(f.options)(f.job, new AbortController().signal),
-    /mp4_1080-1.mp4$/,
+    /mp4_1080-[0-9a-f-]{36}\.mp4$/,
   );
-});
-
-test("default backoff is interruptible and retains resumable work on shutdown", async (t) => {
-  const f = await fixture(t);
-  const stop = new AbortController();
-  delete f.options.wait;
-  f.options.run = async () => {
-    setTimeout(() => stop.abort(), 20);
-    throw new DownloadError("network", true);
-  };
-  await assert.rejects(createDownloader(f.options)(f.job, stop.signal), {
-    name: "AbortError",
-  });
-  assert.equal(f.store.get(f.job.id)?.retry_count, 1);
-});
-
-test("expired active deadline remains expired after restart", async (t) => {
-  const f = await fixture(t);
-  f.store.startedAt(f.job.id, Date.now() - defaultLimits.deadlineMs - 1000);
-  f.options.run = async ({ signal }) =>
-    new Promise((_, reject) => {
-      const keepAlive = setTimeout(() => {}, 100);
-      signal.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(keepAlive);
-          reject(signal.reason);
-        },
-        { once: true },
-      );
-    });
-  await assert.rejects(
-    createDownloader(f.options)(f.job, new AbortController().signal),
-    /deadline/,
-  );
-});
-
-test("restart rebuilds interrupted MP3 conversion instead of publishing truncated audio", async (t) => {
-  const f = await fixture(t);
-  const stage = join(f.directory, ".staging", String(f.job.id));
-  const artifact = join(stage, "media.mp3");
-  const shutdown = new AbortController();
-  f.options.run = async (request) => {
-    if (!request.args.includes("-o")) return f.run(request);
-    await writeFile(join(stage, "media.webm"), "complete source");
-    await writeFile(join(stage, "media.webm.part"), "resumable download");
-    await writeFile(artifact, "truncated audio");
-    shutdown.abort();
-    throw shutdown.signal.reason;
-  };
-  await assert.rejects(createDownloader(f.options)(f.job, shutdown.signal));
-  f.store.recover();
-  const recovered = f.store.claim() as Job;
-  f.options.run = async (request) => {
-    if (!request.args.includes("-o")) return f.run(request);
-    // Like yt-dlp, skip conversion if the target MP3 already exists.
-    try {
-      await readFile(artifact);
-      return "already downloaded";
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    assert.equal(
-      await readFile(join(stage, "media.webm"), "utf8"),
-      "complete source",
-    );
-    assert.equal(
-      await readFile(join(stage, "media.webm.part"), "utf8"),
-      "resumable download",
-    );
-    return f.run(request);
-  };
-  const filename = await createDownloader(f.options)(
-    recovered,
-    new AbortController().signal,
-  );
-  assert.equal(await readFile(join(f.directory, filename), "utf8"), "media");
-});
-
-test("transient retry rebuilds MP3 output left by the failed attempt", async (t) => {
-  const f = await fixture(t);
-  const artifact = join(f.directory, ".staging", String(f.job.id), "media.mp3");
-  let attempts = 0;
-  f.options.run = async (request) => {
-    if (!request.args.includes("-o")) return f.run(request);
-    if (++attempts === 1) {
-      await writeFile(artifact, "truncated audio");
-      throw new DownloadError("network", true);
-    }
-    try {
-      await readFile(artifact);
-      return "already downloaded";
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    return f.run(request);
-  };
-  const filename = await createDownloader(f.options)(
-    f.job,
-    new AbortController().signal,
-  );
-  assert.equal(await readFile(join(f.directory, filename), "utf8"), "media");
-  assert.equal(f.store.get(f.job.id)?.retry_count, 1);
 });
 
 test("slow disk checks are shared with publication and never overlap timer ticks", async (t) => {
@@ -596,9 +369,6 @@ test("slow disk checks are shared with publication and never overlap timer ticks
   const blocked = Promise.withResolvers<number>();
   const checking = Promise.withResolvers<void>();
   const publishing = Promise.withResolvers<void>();
-  f.options.progress = (_job, text) => {
-    if (text === "Processing and validating.") publishing.resolve();
-  };
   const releaseDownload = Promise.withResolvers<void>();
   let checks = 0;
   f.options.freeBytes = async () => {
@@ -609,7 +379,9 @@ test("slow disk checks are shared with publication and never overlap timer ticks
   };
   f.options.run = async (request) => {
     if (request.args.includes("-o")) await releaseDownload.promise;
-    return f.run(request);
+    const result = await f.run(request);
+    if (request.args.includes("-o")) publishing.resolve();
+    return result;
   };
   const running = createDownloader(f.options)(
     f.job,
@@ -626,4 +398,47 @@ test("slow disk checks are shared with publication and never overlap timer ticks
   blocked.resolve(10 * 1024 ** 3);
   await running;
   assert.equal(checks, 2);
+});
+
+test("a failed conversion is attempted once and all temporary files are removed", async (t) => {
+  const f = await fixture(t);
+  f.options.run = async (request) => {
+    const output = await f.run(request);
+    if (request.args.includes("-o"))
+      throw new DownloadError("Temporary download connection failure.");
+    return output;
+  };
+  await assert.rejects(
+    createDownloader(f.options)(f.job, new AbortController().signal),
+    /connection failure/,
+  );
+  assert.equal(f.calls.filter((call) => call.includes("-o")).length, 1);
+  assert.deepEqual(await readdir(join(f.directory, ".staging")), []);
+  assert.deepEqual(await readdir(f.directory), [".staging"]);
+});
+
+test("repeated requests download again into independent temporary directories", async (t) => {
+  const f = await fixture(t);
+  const download = createDownloader(f.options);
+  const first = await download(f.job, new AbortController().signal);
+  const second = await download(f.job, new AbortController().signal);
+  assert.notEqual(first, second);
+  assert.equal(f.calls.filter((call) => call.includes("-o")).length, 2);
+  for (const call of f.calls.filter((call) => call.includes("-o"))) {
+    assert(call.includes("--no-continue"));
+    assert(!call.includes("--continue"));
+  }
+  assert.deepEqual(await readdir(join(f.directory, ".staging")), []);
+});
+
+test("reports parsed percentage and processing progress", async (t) => {
+  const f = await fixture(t);
+  const progress: string[] = [];
+  await createDownloader(f.options)(
+    f.job,
+    new AbortController().signal,
+    (text) => progress.push(text),
+  );
+  assert.deepEqual(progress, ["Downloading 25.5%.", "Processing."]);
+  assert(f.calls[1]?.includes("--progress-template"));
 });

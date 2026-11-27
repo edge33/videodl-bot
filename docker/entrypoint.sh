@@ -6,11 +6,9 @@ if [ "$(id -u)" -eq 0 ]; then
   exit 1
 fi
 
-for directory in "$DOWNLOAD_DIR" "$STATE_DIR"; do
-  if [ ! -d "$directory" ] || [ ! -w "$directory" ] || [ ! -x "$directory" ]; then
-    echo 'Storage paths must be existing writable directories. Check bind-mount ownership against APP_UID/APP_GID.' >&2
-    exit 1
-  fi
-done
+if [ ! -d "$DOWNLOAD_DIR" ] || [ ! -w "$DOWNLOAD_DIR" ] || [ ! -x "$DOWNLOAD_DIR" ]; then
+  echo 'Download path must be an existing writable directory. Check bind-mount ownership against APP_UID/APP_GID.' >&2
+  exit 1
+fi
 
 exec "$@"

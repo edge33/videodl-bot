@@ -4,6 +4,38 @@ This is the agreed implementation plan and handoff for future agents. Work in
 reviewable stages; completing one stage does not authorize starting the next.
 Explicit follow-up requests can refine a stage or change these decisions.
 
+## Current scope — simplified download flow
+
+The owner's 2026-11-27 simplification supersedes the queue/recovery behavior in
+the historical stage notes below. The current flow is: select a format, download
+and convert once, remove temporary files, and report success or failure. Only one
+download runs at a time; additional requests receive a busy reply. There is no
+SQLite state, durable queue, history, retry/backoff, resumption, file reuse,
+restart recovery, or scheduled notification delivery. `/cancel` stops the active
+attempt. Authorization, supported formats, resource limits, final-file checks,
+process-group termination, and safe server diagnostics remain. `STATE_DIR` and
+`QUEUE_MAX_PENDING` are unused; existing state files are left untouched.
+
+Validation: `pnpm check`, all 75 tests via `pnpm test`, and `git diff --check`
+pass. Production line, branch, and function coverage is 100%. Tests use the local
+Telegram stub and controlled media tools; loopback networking was enabled for the
+suite. The updated Docker image builds successfully. No dependency or lockfile
+changes were needed, and local `.env` was preserved.
+
+Format selections acknowledge the button and delete the format-choice message. Failures in
+either UI call stop the attempt before downloading, log a safe error, and ask
+the user to send the link again.
+
+Percentage updates now edit one temporary status message at most every 10 seconds,
+with one edit in flight. Failed progress edits are safely logged; completion
+deletes the status before sending a separate outcome reply. The user’s original
+link message is preserved. Status deletion
+failures are logged without suppressing that reply. No queue or recovery was reintroduced.
+
+Manual end-to-end acceptance remains outstanding for this simplified flow.
+Historical findings specific to recovery/retry/notification persistence no longer
+apply. README describes current configuration and behavior.
+
 ## Progress and next action
 
 | Stage                                    | Status                        | Review                                                |

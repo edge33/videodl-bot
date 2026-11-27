@@ -1,10 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { link, mkdir, rm, stat, statfs } from "node:fs/promises";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { type DownloadLimits, defaultLimits } from "./download-limits.ts";
 import { DownloadError, type ProcessRunner, runProcess } from "./process.ts";
-import type { Job, QueueStore } from "./queue.ts";
-import type { Downloader } from "./worker.ts";
+import type { Format } from "./video.ts";
 
 interface Metadata {
   id?: unknown;
@@ -25,18 +24,25 @@ function failureReason(error: unknown): string {
   return "Unexpected download failure.";
 }
 
+export interface DownloadRequest {
+  videoId: string;
+  format: Format;
+}
+export type Downloader = (
+  request: DownloadRequest,
+  signal: AbortSignal,
+  progress?: (text: string) => void,
+) => Promise<string>;
+
 export interface DownloadOptions {
   directory: string;
-  store: QueueStore;
   limits?: DownloadLimits;
   run?: ProcessRunner;
   freeBytes?: () => Promise<number>;
-  wait?: (ms: number, signal: AbortSignal) => Promise<unknown>;
-  progress?: (job: Job, text: string) => void;
 }
 
 export function createDownloader(options: DownloadOptions): Downloader {
-  const { directory, store } = options;
+  const { directory } = options;
   const limits = options.limits ?? defaultLimits;
   const run = options.run ?? runProcess;
   const freeBytes =
@@ -45,8 +51,6 @@ export function createDownloader(options: DownloadOptions): Downloader {
       const disk = await statfs(directory);
       return disk.bavail * disk.bsize;
     });
-  const wait =
-    options.wait ?? ((ms, signal) => delay(ms, undefined, { signal }));
   let spaceCheck: Promise<void> | undefined;
   const checkSpace = (): Promise<void> => {
     spaceCheck ??= (async () => {
@@ -58,7 +62,8 @@ export function createDownloader(options: DownloadOptions): Downloader {
     return spaceCheck;
   };
 
-  return async (job, shutdown) => {
+  return async (job, shutdown, progress) => {
+    const id = randomUUID();
     let phase = "preparation";
     const log = (
       event: string,
@@ -68,7 +73,7 @@ export function createDownloader(options: DownloadOptions): Downloader {
         JSON.stringify({
           timestamp: new Date().toISOString(),
           event,
-          jobId: job.id,
+          downloadId: id,
           format: job.format,
           phase,
           ...details,
@@ -76,12 +81,8 @@ export function createDownloader(options: DownloadOptions): Downloader {
       );
     };
     log("download_started");
-    const stage = join(directory, ".staging", String(job.id));
-    await mkdir(stage, { recursive: true });
-    const startedAt = store.startedAt(job.id, Date.now());
-    const deadline = AbortSignal.timeout(
-      Math.max(1, limits.deadlineMs - (Date.now() - startedAt)),
-    );
+    const stage = join(directory, ".staging", id);
+    const deadline = AbortSignal.timeout(limits.deadlineMs);
     const controller = new AbortController();
     const signal = AbortSignal.any([shutdown, deadline, controller.signal]);
     // Monitoring also covers FFmpeg merging/conversion, which can exceed source size.
@@ -162,19 +163,7 @@ export function createDownloader(options: DownloadOptions): Downloader {
     const perform = async () => {
       try {
         signal.throwIfAborted();
-        // Record the intended name in SQLite before publication; it survives stage cleanup.
-        const published = job.filename;
-        if (published) {
-          phase = "reconciliation";
-          log("download_phase_started");
-          try {
-            await validate(join(directory, published));
-            await rm(stage, { recursive: true, force: true });
-            return published;
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-          }
-        }
+        await mkdir(stage, { recursive: true });
         const common = [
           "--ignore-config",
           "--no-playlist",
@@ -186,140 +175,114 @@ export function createDownloader(options: DownloadOptions): Downloader {
           "0",
           "--fragment-retries",
           "0",
+          "--extractor-retries",
+          "0",
+          "--file-access-retries",
+          "0",
+          "--abort-on-unavailable-fragments",
           "--socket-timeout",
           "30",
         ];
-        const url = `https://www.youtube.com/watch?v=${job.video_id}`;
-        for (let attempt = job.retry_count; ; attempt++) {
-          try {
-            signal.throwIfAborted();
-            phase = "metadata";
-            log("download_phase_started", { attempt: attempt + 1 });
-            await checkSpace();
-            const metadata = JSON.parse(
-              await execute("yt-dlp", [
-                ...common,
-                // Full metadata can exceed the process output buffer for videos
-                // with many audio tracks; only request fields used by policy.
-                "--print",
-                "%(.{id,title,duration,live_status,availability})j",
-                "--skip-download",
-                "--",
-                url,
-              ]),
-            ) as Metadata;
-            if (
-              metadata.id !== job.video_id ||
-              typeof metadata.title !== "string" ||
-              typeof metadata.duration !== "number" ||
-              !Number.isFinite(metadata.duration) ||
-              metadata.duration <= 0 ||
-              metadata.duration > limits.durationSeconds ||
-              !["not_live", "was_live"].includes(
-                String(metadata.live_status),
-              ) ||
-              !["public", "unlisted"].includes(String(metadata.availability))
-            )
-              throw new DownloadError(
-                "Source is unavailable, restricted, live, or exceeds the duration limit.",
-              );
-            log("metadata_validated", { durationSeconds: metadata.duration });
-            const title =
-              metadata.title
-                .normalize("NFKC")
-                .replace(/[^a-zA-Z0-9 _-]/g, "")
-                .trim()
-                .slice(0, 80) || "video";
-            const extension = job.format === "mp3" ? "mp3" : "mp4";
-            const filename = `${title} [${job.video_id}] ${job.format}-${job.id}.${extension}`;
-            const cap = job.format === "mp4_720" ? 720 : 1080;
-            const format =
-              job.format === "mp3"
-                ? [
-                    "-f",
-                    "bestaudio/best",
-                    "-x",
-                    "--audio-format",
-                    "mp3",
-                    "--audio-quality",
-                    "320K",
-                  ]
-                : [
-                    "-f",
-                    `bestvideo[vcodec^=avc1][height<=${cap}]+bestaudio[acodec^=mp4a]/best[vcodec^=avc1][acodec^=mp4a][height<=${cap}]`,
-                    "--merge-output-format",
-                    "mp4",
-                    "--remux-video",
-                    "mp4",
-                  ];
-            // A killed FFmpeg can leave a readable but incomplete MP3. yt-dlp
-            // treats that output as finished, so rebuild it while retaining
-            // source audio and .part downloads for supported resumption.
-            if (job.format === "mp3")
-              await rm(join(stage, "media.mp3"), { force: true });
-            phase = "download";
-            log("download_phase_started");
-            options.progress?.(job, "Downloading.");
-            await execute(
-              "yt-dlp",
-              [
-                ...common,
-                ...format,
-                "--continue",
-                "--newline",
-                "--progress-template",
-                "download:progress:%(progress._percent_str)s",
-                "--max-filesize",
-                String(limits.fileBytes),
-                "-o",
-                join(stage, "media.%(ext)s"),
-                "--",
-                url,
-              ],
-              (line) => {
-                const match = /^progress:\s*(\d+(?:\.\d+)?)%/.exec(line);
-                if (match) options.progress?.(job, `Downloading ${match[1]}%.`);
-                if (/^\[(Merger|ExtractAudio|VideoRemuxer)\]/.test(line)) {
-                  phase = "processing";
-                  log("download_phase_started");
-                  options.progress?.(job, "Processing.");
-                }
-              },
-            );
-            phase = "validation";
-            log("download_phase_started");
-            options.progress?.(job, "Processing and validating.");
-            const artifact = join(stage, `media.${extension}`);
-            await checkSpace();
-            await validate(artifact);
-            signal.throwIfAborted();
-            phase = "publication";
-            log("download_phase_started");
-            store.preparePublication(job.id, filename);
-            // link is atomic and fails on an existing destination; rename would overwrite.
-            await link(artifact, join(directory, filename));
-            await rm(stage, { recursive: true, force: true });
-            return filename;
-          } catch (error) {
-            if (
-              signal.aborted ||
-              !(error instanceof DownloadError) ||
-              !error.transient ||
-              attempt >= 2
-            )
-              throw error;
-            store.retry(job.id);
-            log("download_retry_scheduled", {
-              attempt: attempt + 2,
-              delayMs: attempt === 0 ? 10000 : 30000,
-              reason: failureReason(error),
-            });
-            await wait(attempt === 0 ? 10000 : 30000, signal);
-          }
-        }
+        const url = `https://www.youtube.com/watch?v=${job.videoId}`;
+        signal.throwIfAborted();
+        phase = "metadata";
+        log("download_phase_started");
+        await checkSpace();
+        const metadata = JSON.parse(
+          await execute("yt-dlp", [
+            ...common,
+            // Full metadata can exceed the process output buffer for videos
+            // with many audio tracks; only request fields used by policy.
+            "--print",
+            "%(.{id,title,duration,live_status,availability})j",
+            "--skip-download",
+            "--",
+            url,
+          ]),
+        ) as Metadata;
+        if (
+          metadata.id !== job.videoId ||
+          typeof metadata.title !== "string" ||
+          typeof metadata.duration !== "number" ||
+          !Number.isFinite(metadata.duration) ||
+          metadata.duration <= 0 ||
+          metadata.duration > limits.durationSeconds ||
+          !["not_live", "was_live"].includes(String(metadata.live_status)) ||
+          !["public", "unlisted"].includes(String(metadata.availability))
+        )
+          throw new DownloadError(
+            "Source is unavailable, restricted, live, or exceeds the duration limit.",
+          );
+        log("metadata_validated", { durationSeconds: metadata.duration });
+        const title =
+          metadata.title
+            .normalize("NFKC")
+            .replace(/[^a-zA-Z0-9 _-]/g, "")
+            .trim()
+            .slice(0, 80) || "video";
+        const extension = job.format === "mp3" ? "mp3" : "mp4";
+        const filename = `${title} [${job.videoId}] ${job.format}-${id}.${extension}`;
+        const cap = job.format === "mp4_720" ? 720 : 1080;
+        const format =
+          job.format === "mp3"
+            ? [
+                "-f",
+                "bestaudio/best",
+                "-x",
+                "--audio-format",
+                "mp3",
+                "--audio-quality",
+                "320K",
+              ]
+            : [
+                "-f",
+                `bestvideo[vcodec^=avc1][height<=${cap}]+bestaudio[acodec^=mp4a]/best[vcodec^=avc1][acodec^=mp4a][height<=${cap}]`,
+                "--merge-output-format",
+                "mp4",
+                "--remux-video",
+                "mp4",
+              ];
+        phase = "download";
+        log("download_phase_started");
+        await execute(
+          "yt-dlp",
+          [
+            ...common,
+            ...format,
+            "--no-continue",
+            "--newline",
+            "--progress",
+            "--progress-template",
+            "download:progress:%(progress._percent_str)s",
+            "--max-filesize",
+            String(limits.fileBytes),
+            "-o",
+            join(stage, "media.%(ext)s"),
+            "--",
+            url,
+          ],
+          (line) => {
+            const match = /^progress:\s*(\d+(?:\.\d+)?)%/.exec(line);
+            if (match) progress?.(`Downloading ${match[1]}%.`);
+            if (/^\[(Merger|ExtractAudio|VideoRemuxer)\]/.test(line)) {
+              progress?.("Processing.");
+              phase = "processing";
+              log("download_phase_started");
+            }
+          },
+        );
+        phase = "validation";
+        log("download_phase_started");
+        const artifact = join(stage, `media.${extension}`);
+        await checkSpace();
+        await validate(artifact);
+        signal.throwIfAborted();
+        phase = "publication";
+        log("download_phase_started");
+        // link is atomic and fails on an existing destination; rename would overwrite.
+        await link(artifact, join(directory, filename));
+        return filename;
       } catch (error) {
-        if (!shutdown.aborted || store.get(job.id)?.state === "cancelled")
-          await rm(stage, { recursive: true, force: true });
         if (deadline.aborted)
           throw new DownloadError("Active job deadline exceeded.");
         if (controller.signal.aborted) throw controller.signal.reason;
@@ -327,6 +290,11 @@ export function createDownloader(options: DownloadOptions): Downloader {
       }
     };
     return perform()
+      .finally(async () => {
+        clearInterval(monitor);
+        await rm(stage, { recursive: true, force: true });
+        log("temporary_files_removed");
+      })
       .then((filename) => {
         log("download_completed");
         return filename;
@@ -338,7 +306,6 @@ export function createDownloader(options: DownloadOptions): Downloader {
           log("download_failed", { reason: failureReason(error) });
         }
         throw error;
-      })
-      .finally(() => clearInterval(monitor));
+      });
   };
 }
