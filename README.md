@@ -107,7 +107,7 @@ executables; Python installs can use the `default` extra). The bot explicitly
 selects the pinned Node executable as the YouTube JavaScript runtime, disables
 ambient yt-dlp configuration and remote component fetching, and never loads
 account cookies. See the [official EJS setup guide](https://github.com/yt-dlp/yt-dlp/wiki/EJS).
-Pinned image/tool provisioning is part of Stage 5; no tools are installed by the bot.
+The container image provisions pinned tools; no tools are installed by the bot.
 On Arch/CachyOS, install the required tools with:
 
 ```sh
@@ -281,8 +281,6 @@ the existing CI checks. The Dependency Dashboard tracks pending updates.
 The Dockerfile custom managers follow the [Renovate custom manager presets](https://docs.renovatebot.com/presets-customManagers/);
 Debian lookups follow the [Repology datasource documentation](https://docs.renovatebot.com/modules/datasource/repology/).
 
-## Implementation plan
+## Project conventions
 
-See [docs/implementation-plan.md](docs/implementation-plan.md) for the current
-project status and testing decision. Agent workflow
-and project conventions are in [AGENTS.md](AGENTS.md).
+See [AGENTS.md](AGENTS.md) for agent workflow and project conventions.
