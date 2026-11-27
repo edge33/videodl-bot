@@ -81,22 +81,6 @@ The bot keeps pending Telegram updates on startup. Application errors are
 reported without logging tokens or message payloads. Tests use synthetic
 credentials and a loopback HTTP server; they never load `.env`.
 
-Download diagnostics are written to stdout as one JSON object per event. Each
-record includes a UTC `timestamp`, `event`, `jobId`, selected `format`, and
-`phase`. Logs cover metadata checks, downloading, processing, validation,
-publication, recovered-file reconciliation, retries, completion, and interruption.
-Media-tool events include the tool name and elapsed time; successful calls also
-include stdout size in bytes. Failures include a safe reason, and retry events
-include the next attempt and delay. Use the job ID from `/status` to correlate
-events. For a container, follow them with `docker logs --follow videodl-bot`.
-
-Logs omit titles, filenames, video/media URLs, command arguments, credentials,
-Telegram payloads, and raw tool output/errors. Download percentages remain in
-Telegram rather than generating a server log for every progress line. Tool stdout
-above 4 MiB terminates the media process group and reports an explicit failure;
-structured output is never silently truncated. Metadata inspection requests only
-the fields needed for source validation and naming.
-
 ## Format selection and queue
 
 Send one complete YouTube video URL per message: `youtube.com/watch?v=...`,
